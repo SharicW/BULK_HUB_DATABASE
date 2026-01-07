@@ -2,6 +2,7 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import concurrent.futures
+import os
 import time
 
 DB_CONFIG = {
@@ -12,9 +13,11 @@ DB_CONFIG = {
     "password": "sqwiztashsain8310"
 }
 
-# ПРОСТОЕ СОЕДИНЕНИЕ (без pool!)
 def get_connection():
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+    DATABASE_URL = os.getenv("DATABASE_URL")  # ← Railway переменная!
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL not found! Check Railway Variables")
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 # API функции (БЕЗ изменений)
 def get_discord_top(limit=15):
