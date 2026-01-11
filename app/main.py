@@ -1,0 +1,61 @@
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
+
+from app.stats import (
+    get_discord_top,
+    get_telegram_top,
+    get_tg_user,
+    get_dc_user,
+    close_pool,
+    shutdown_workers,
+    parse_sanctum,  # Парсер для sanctum.so
+    parse_solscan,  # Парсер для solscan.io
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Shutdown приложения: закрываем ресурсы
+    shutdown_workers()
+    close_pool()
+
+app = FastAPI(title="BULK Stats API", lifespan=lifespan)
+
+@app.get("/")
+def root():
+    return {
+        "status": "🚀 BULK API OK",
+        "discord": "/discord/top/15",
+        "telegram": "/telegram/top/15",
+        "parse_sanctum": "/parse/sanctum",
+        "parse_solscan": "/parse/solscan"
+    }
+
+@app.get("/discord/top/{limit}")
+async def discord_top(limit: int = 15):
+    return await run_in_threadpool(get_discord_top, limit)
+
+@app.get("/telegram/top/{limit}")
+async def telegram_top(limit: int = 15):
+    return await run_in_threadpool(get_telegram_top, limit)
+
+@app.get("/tg/{username}")
+async def get_tg_user_endpoint(username: str):
+    result = await run_in_threadpool(get_tg_user, username)
+    return result or {"error": f"👤 TG {username} не найден"}
+
+@app.get("/dc/{username}")
+async def get_dc_user_endpoint(username: str):
+    result = await run_in_threadpool(get_dc_user, username)
+    return result or {"error": f"👤 DC {username} не найден"}
+
+@app.get("/parse/sanctum")
+async def parse_sanctum_data():
+    data = await run_in_threadpool(parse_sanctum)
+    return {"status": "success", "data": data}
+
+@app.get("/parse/solscan")
+async def parse_solscan_data():
+    data = await run_in_threadpool(parse_solscan)
+    return {"status": "success", "data": data}
