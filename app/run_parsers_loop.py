@@ -7,48 +7,46 @@ ROOT = "/app"
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from app.stats import parse_sanctum, parse_solscan
+from app.stats import parse_sanctum, parse_solscan  # noqa: E402
 
 
 def _get_interval() -> int:
-    raw = os.getenv("PARSER_INTERVAL_SEC", "300").strip()
+    raw = (os.getenv("PARSER_INTERVAL_SEC") or "300").strip()
     try:
-        val = int(raw)
-        return max(val, 30)
+        n = int(raw)
+        return max(n, 30)
     except Exception:
         return 300
 
 
-def _log(msg: str) -> None:
+def log(msg: str) -> None:
     print(msg, flush=True)
 
 
 def main() -> None:
     interval = _get_interval()
-    _log(f"[loop] started. interval={interval}s")
+    log(f"[loop] started interval={interval}s")
 
     while True:
-        # Sanctum
         try:
-            _log("[sanctum] start")
+            log("[sanctum] start")
             res = parse_sanctum()
-            _log(f"[sanctum] ok: {res}")
+            log(f"[sanctum] ok {res}")
         except Exception:
-            _log("[sanctum] ERROR")
+            log("[sanctum] ERROR")
             traceback.print_exc()
 
-        # Solscan
         try:
-            _log("[solscan] start")
+            log("[solscan] start")
             res = parse_solscan(limit_rows=25)
-            _log(f"[solscan] ok: {res}")
+            log(f"[solscan] ok {res}")
         except Exception:
-            _log("[solscan] ERROR")
+            log("[solscan] ERROR")
             traceback.print_exc()
 
-        _log(f"[loop] sleep {interval}s")
+        log(f"[loop] sleep {interval}s")
         time.sleep(interval)
 
 
-if name == "main":
+if __name__ == "__main__":
     main()
