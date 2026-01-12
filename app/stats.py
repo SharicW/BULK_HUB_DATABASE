@@ -151,6 +151,55 @@ def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
     finally:
         _put_conn(conn)
 
+def get_discord_stats() -> Dict[str, int]:
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_users,
+                    COALESCE(SUM(message_count), 0) AS messages_total
+                FROM discord_users
+                """
+            )
+            row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
+            return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
+    finally:
+        _put_conn(conn)
+
+
+def get_telegram_stats() -> Dict[str, int]:
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_users,
+                    COALESCE(SUM(message_count), 0) AS messages_total
+                FROM telegram_users
+                """
+            )
+            row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
+            return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
+    finally:
+        _put_conn(conn)
+
+
+def get_community_stats() -> Dict[str, int]:
+    dc = get_discord_stats()
+    tg = get_telegram_stats()
+    x_users = 0  # пока заглушка
+    total = dc["total_users"] + tg["total_users"] + x_users
+
+    return {
+        "discord_users": dc["total_users"],
+        "telegram_users": tg["total_users"],
+        "x_users": x_users,
+        "total_users": total,
+    }
+
 # ====================
 # Парсеры
 # ====================
@@ -309,3 +358,4 @@ def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
         return None
     finally:
         _put_conn(conn)
+
