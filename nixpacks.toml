@@ -1,0 +1,7 @@
+# nixpacks.toml
+
+[dependencies]
+packages = ["chromium", "chromium-chromedriver"]
+
+[env]
+CHROME_BIN = "/usr/bin/chromium"
