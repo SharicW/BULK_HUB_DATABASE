@@ -11,6 +11,10 @@ from app.stats import (
     shutdown_workers,
     parse_sanctum,  # Парсер для sanctum.so
     parse_solscan,  # Парсер для solscan.io
+@app.get("/community/stats")
+async def community_stats():
+    return await run_in_threadpool(get_community_stats)
+
 )
 
 @asynccontextmanager
@@ -68,4 +72,5 @@ async def parse_sanctum_data():
 async def parse_solscan_data():
     data = await run_in_threadpool(parse_solscan)
     return {"status": "success", "data": data}
+
 
