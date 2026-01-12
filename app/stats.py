@@ -497,4 +497,5 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
         finally:
             _put_conn(conn)
 
-    _submit_background(_add))
+    _submit_background(_add)
+
