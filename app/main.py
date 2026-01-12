@@ -22,6 +22,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="BULK Stats API", lifespan=lifespan)
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://bulkhub-production.up.railway.app"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/")
 def root():
     return {
@@ -59,3 +68,4 @@ async def parse_sanctum_data():
 async def parse_solscan_data():
     data = await run_in_threadpool(parse_solscan)
     return {"status": "success", "data": data}
+
