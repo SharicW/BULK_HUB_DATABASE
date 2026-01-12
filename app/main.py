@@ -1,33 +1,30 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.stats import (
     get_discord_top,
     get_telegram_top,
     get_tg_user,
     get_dc_user,
+    get_community_stats,  # <-- убедись, что добавил эту функцию в stats.py
     close_pool,
     shutdown_workers,
-    parse_sanctum,  # Парсер для sanctum.so
-    parse_solscan,  # Парсер для solscan.io
-@app.get("/community/stats")
-async def community_stats():
-    return await run_in_threadpool(get_community_stats)
-
 )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # startup: ничего не обязательно (пул сам инициализируется при первом запросе)
     yield
-    # Shutdown приложения: закрываем ресурсы
+    # shutdown: аккуратно закрываем ресурсы
     shutdown_workers()
     close_pool()
 
 app = FastAPI(title="BULK Stats API", lifespan=lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
+# ✅ CORS для фронта
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://bulkhub-production.up.railway.app"],
@@ -41,9 +38,12 @@ def root():
         "status": "🚀 BULK API OK",
         "discord": "/discord/top/15",
         "telegram": "/telegram/top/15",
-        "parse_sanctum": "/parse/sanctum",
-        "parse_solscan": "/parse/solscan"
+        "community": "/community/stats",
     }
+
+@app.get("/community/stats")
+async def community_stats():
+    return await run_in_threadpool(get_community_stats)
 
 @app.get("/discord/top/{limit}")
 async def discord_top(limit: int = 15):
@@ -62,15 +62,3 @@ async def get_tg_user_endpoint(username: str):
 async def get_dc_user_endpoint(username: str):
     result = await run_in_threadpool(get_dc_user, username)
     return result or {"error": f"👤 DC {username} не найден"}
-
-@app.get("/parse/sanctum")
-async def parse_sanctum_data():
-    data = await run_in_threadpool(parse_sanctum)
-    return {"status": "success", "data": data}
-
-@app.get("/parse/solscan")
-async def parse_solscan_data():
-    data = await run_in_threadpool(parse_solscan)
-    return {"status": "success", "data": data}
-
-
