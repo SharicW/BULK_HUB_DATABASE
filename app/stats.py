@@ -1,4 +1,3 @@
-# app/stats.py
 import os
 import re
 import logging
@@ -19,7 +18,6 @@ from selenium.webdriver.support import expected_conditions as EC
 
 
 logger = logging.getLogger(__name__)
-
 
 # --------------------
 # DB CONFIG / POOL
@@ -188,147 +186,6 @@ def ensure_schema() -> None:
 
 
 # --------------------
-# API FUNCTIONS (TOP + STATS)
-# --------------------
-def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT user_id, username, message_count
-                FROM discord_users
-                ORDER BY message_count DESC NULLS LAST
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] \
-                or [{"error": "Нет данных"}]
-    finally:
-        _put_conn(conn)
-
-
-def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    user_id,
-                    COALESCE(username, first_name, 'ID' || user_id) AS username,
-                    message_count
-                FROM telegram_users
-                ORDER BY message_count DESC NULLS LAST
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] \
-                or [{"error": "Нет данных"}]
-    finally:
-        _put_conn(conn)
-
-
-def get_discord_stats() -> Dict[str, int]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT COUNT(*) AS total_users,
-                       COALESCE(SUM(message_count), 0) AS messages_total
-                FROM discord_users
-            """)
-            row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
-            return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
-    finally:
-        _put_conn(conn)
-
-
-def get_telegram_stats() -> Dict[str, int]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT COUNT(*) AS total_users,
-                       COALESCE(SUM(message_count), 0) AS messages_total
-                FROM telegram_users
-            """)
-            row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
-            return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
-    finally:
-        _put_conn(conn)
-
-
-def get_community_stats() -> Dict[str, int]:
-    dc = get_discord_stats()
-    tg = get_telegram_stats()
-    x_users = 0
-    return {
-        "discord_users": dc["total_users"],
-        "telegram_users": tg["total_users"],
-        "x_users": x_users,
-        "total_users": dc["total_users"] + tg["total_users"] + x_users,
-    }
-
-
-# --------------------
-# USER LOOKUP
-# --------------------
-def get_tg_user(username: str) -> Optional[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT COALESCE(username, first_name, 'ID' || user_id) AS username, message_count
-                FROM telegram_users
-                WHERE COALESCE(username, first_name, '') ILIKE %s
-                ORDER BY message_count DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{username}%",),
-            )
-            tg = cur.fetchone()
-            if tg:
-                return {"platform": "TG", "username": tg["username"], "messages": tg["message_count"]}
-            return None
-    finally:
-        _put_conn(conn)
-
-
-def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT username, message_count
-                FROM discord_users
-                WHERE COALESCE(username, '') ILIKE %s
-                ORDER BY message_count DESC NULLS LAST
-                LIMIT 1
-                """,
-                (f"%{username}%",),
-            )
-            dc = cur.fetchone()
-            if dc:
-                return {"platform": "DC", "username": dc["username"], "messages": dc["message_count"]}
-            return None
-    finally:
-        _put_conn(conn)
-
-
-# --------------------
 # SELENIUM HELPERS
 # --------------------
 def _make_driver() -> webdriver.Chrome:
@@ -336,14 +193,13 @@ def _make_driver() -> webdriver.Chrome:
     Railway: chromium + chromedriver ставятся через nixpacks.toml.
     """
     opts = ChromeOptions()
-    opts.add_argument("--headless=new")
+    opts.add_argument("--headless")  # Headless режим для серверов
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--lang=en-US")
 
-    service = ChromeService()  # chromedriver должен быть в PATH
+    service = ChromeService()  # chromedriver должен быть в PATH на Railway
     return webdriver.Chrome(service=service, options=opts)
 
 
@@ -641,4 +497,4 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
         finally:
             _put_conn(conn)
 
-    _submit_background(_add)
+    _submit_background(_add))
