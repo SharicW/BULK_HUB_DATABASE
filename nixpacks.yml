@@ -1,0 +1,23 @@
+version: '1'
+env:
+  PACKAGES:
+    - chromium
+    - libnss3
+    - libgdk-pixbuf2.0-dev
+    - fonts-liberation
+    - libappindicator3-1
+    - libasound2
+    - libxss1
+    - libxtst6
+    - libnss3-dev
+    - libxcomposite1
+    - libxrandr2
+    - libxi6
+    - libgtk-3-0
+    - libxdamage1
+    - libdbus-glib-1-2
+    - libatspi2.0-0
+    - libgdk-pixbuf2.0-0
+
+  ENV:
+    - CHROME_BIN: /usr/bin/chromium
