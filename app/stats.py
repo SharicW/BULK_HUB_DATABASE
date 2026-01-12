@@ -126,7 +126,7 @@ def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
     finally:
         _put_conn(conn)
 
-def get_telegram_top(limit: int = 5000) -> List[Dict[str, Any]]:
+def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -358,5 +358,6 @@ def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
         return None
     finally:
         _put_conn(conn)
+
 
 
