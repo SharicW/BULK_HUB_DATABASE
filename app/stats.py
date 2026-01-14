@@ -360,6 +360,7 @@ def _make_driver() -> webdriver.Chrome:
     return webdriver.Chrome(service=service, options=opts)
 
 
+
 def _clean_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
@@ -513,10 +514,11 @@ def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
         driver.get(SOLSCAN_URL)
         wait = WebDriverWait(driver, 45)
 
-        def _has_any_rows(d):
-            return (len(d.find_elements(By.CSS_SELECTOR, "table tbody tr")) > 0) or (len(d.find_elements(By.CSS_SELECTOR, "div[role='row']")) > 1)
+        def _has_any_rows(driver):
+    time.sleep(2)  # Задержка перед проверкой элементов
+    return len(driver.find_elements(By.CSS_SELECTOR, "table tbody tr")) > 0 or len(driver.find_elements(By.CSS_SELECTOR, "div[role='row']")) > 1
 
-        wait.until(_has_any_rows)
+wait.until(_has_any_rows)  # Используем нашу функцию с задержкой
 
         parsed = _parse_solscan_rows_table(driver, limit_rows)
         if not parsed:
@@ -628,5 +630,6 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
             _put_conn(conn)
 
     _submit_background(_add)
+
 
 
