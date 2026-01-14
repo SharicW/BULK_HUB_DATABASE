@@ -345,10 +345,13 @@ def _make_driver() -> webdriver.Chrome:
     opts.add_argument("--headless=new")  # Новый headless режим для Chromium
     opts.add_argument("--no-sandbox")  # Для работы в контейнерах
     opts.add_argument("--disable-dev-shm-usage")  # Убираем ошибку с памятью
-    opts.add_argument("--disable-gpu")  # Отключаем GPU, так как он не нужен
+    opts.add_argument("--disable-gpu")  # Отключение GPU
     opts.add_argument("--window-size=1920,1080")  # Устанавливаем размер окна
     opts.add_argument("--lang=en-US")  # Устанавливаем язык
     opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")  # Указываем User-Agent для корректного отображения
+    opts.add_argument("--disable-software-rasterizer")  # Добавим этот параметр для устранения некоторых ошибок
+    opts.add_argument('--remote-debugging-port=9222')  # Указывает порт для отладки, если проблема с DevTools
+    opts.add_argument('--no-sandbox') 
 
     if chrome_bin:
         opts.binary_location = chrome_bin  # Устанавливаем путь к бинарнику Chromium
@@ -625,4 +628,5 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
             _put_conn(conn)
 
     _submit_background(_add)
+
 
