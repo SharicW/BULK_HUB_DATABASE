@@ -342,18 +342,18 @@ def _make_driver() -> webdriver.Chrome:
         raise RuntimeError("chromedriver not found in PATH. Add it via nixpacks.toml: chromedriver")
 
     opts = ChromeOptions()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--lang=en-US")
-    opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    opts.add_argument("--headless=new")  # Новый headless режим для Chromium
+    opts.add_argument("--no-sandbox")  # Для работы в контейнерах
+    opts.add_argument("--disable-dev-shm-usage")  # Убираем ошибку с памятью
+    opts.add_argument("--disable-gpu")  # Отключаем GPU, так как он не нужен
+    opts.add_argument("--window-size=1920,1080")  # Устанавливаем размер окна
+    opts.add_argument("--lang=en-US")  # Устанавливаем язык
+    opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")  # Указываем User-Agent для корректного отображения
 
     if chrome_bin:
-        opts.binary_location = chrome_bin
+        opts.binary_location = chrome_bin  # Устанавливаем путь к бинарнику Chromium
 
-    service = ChromeService(executable_path=chromedriver_path)
+    service = ChromeService(executable_path=chromedriver_path)  # Указываем путь к chromedriver
     return webdriver.Chrome(service=service, options=opts)
 
 
@@ -625,3 +625,4 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
             _put_conn(conn)
 
     _submit_background(_add)
+
