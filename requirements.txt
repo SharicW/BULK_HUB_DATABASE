@@ -59,5 +59,6 @@ watchfiles==1.1.1
 websockets==15.0.1
 xyzservices==2025.11.0
 yarl==1.22.0
-selenium==4.8.0
+selenium==4.39.0
+
 
