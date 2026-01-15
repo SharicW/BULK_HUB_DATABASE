@@ -361,19 +361,20 @@ def get_latest_sanctum() -> Dict[str, Any]:
 # --------------------
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
-SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY")  # <-- Railway Variables
+def _get_solscan_key() -> str:
+    return (os.getenv("SOLSCAN_API_KEY") or "").strip()
 SOLSCAN_BASE = "https://pro-api.solscan.io"
 
 
 def _solscan_headers() -> Dict[str, str]:
-    if not SOLSCAN_API_KEY:
-        raise RuntimeError("SOLSCAN_API_KEY is not set. Add it in Railway Variables.")
-    # Solscan Pro API: ключ передаётся заголовком token
+    key = _get_solscan_key()
+    if not key:
+        raise RuntimeError("SOLSCAN_API_KEY is empty (after strip). Check Railway Variables and restart service.")
     return {
         "accept": "application/json",
-        "content-type": "application/json",
-        "token": SOLSCAN_API_KEY,
+        "token": key,
     }
+
 
 
 def _coerce_page_size(n: int) -> int:
@@ -672,3 +673,4 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
