@@ -371,9 +371,13 @@ def get_latest_sanctum() -> Dict[str, Any]:
 
 
 # --------------------
+# --------------------
 # SOLSCAN PARSER (FREE: selenium scrape, no API key)
 # --------------------
-SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
+SOLSCAN_TOKEN_MINT = os.getenv(
+    "SOLSCAN_TOKEN_MINT",
+    "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn",
+)
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
 
 
@@ -382,7 +386,6 @@ def _solscan_token_url() -> str:
 
 
 def _try_click_transfers_tab(driver) -> None:
-    # Solscan UI может быть разной: кнопка/вкладка "Transfers"
     xps = [
         "//button[contains(., 'Transfers')]",
         "//a[contains(., 'Transfers')]",
@@ -390,7 +393,9 @@ def _try_click_transfers_tab(driver) -> None:
     ]
     for xp in xps:
         try:
-            el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
+            el = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, xp))
+            )
             el.click()
             return
         except Exception:
@@ -398,21 +403,21 @@ def _try_click_transfers_tab(driver) -> None:
 
 
 def _extract_rows(driver) -> List[webdriver.remote.webelement.WebElement]:
-    # 1) таблица
     trs = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     if trs:
         return trs
 
-    # 2) data-grid (часто у них именно так)
     rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row']")
-    # обычно первая строка — header
     if len(rows) > 1:
         return rows[1:]
     return []
 
 
-def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]]:
-    # Пытаемся вытащить signature из ссылки /tx/...
+def _parse_row(
+    row,
+) -> Optional[
+    Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]
+]:
     signature = ""
     try:
         a = row.find_element(By.CSS_SELECTOR, "a[href^='/tx/']")
@@ -424,7 +429,6 @@ def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal]
     if not signature:
         return None
 
-    # Собираем ячейки
     cells_text: List[str] = []
     cells = row.find_elements(By.CSS_SELECTOR, "td")
     if not cells:
@@ -435,15 +439,11 @@ def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal]
         if t:
             cells_text.append(t)
 
-    # Очень приблизительная разметка (у Solscan может меняться),
-    # поэтому берём “что есть” и стараемся не падать.
-    # Обычно: Time | Action | From | To | Amount ...
     time_txt = cells_text[0] if len(cells_text) > 0 else ""
     action = cells_text[1] if len(cells_text) > 1 else "TRANSFER"
     from_addr = cells_text[2] if len(cells_text) > 2 else ""
     to_addr = cells_text[3] if len(cells_text) > 3 else ""
 
-    # Amount (если есть) — пробуем найти первое число в конце списка
     amount = None
     for t in reversed(cells_text):
         d = _to_decimal(t)
@@ -451,7 +451,6 @@ def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal]
             amount = d
             break
 
-    # value на сайте может быть в $, но часто отсутствует — оставим None
     value = None
     token = SOLSCAN_TOKEN_SYMBOL
 
@@ -461,14 +460,13 @@ def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal]
 def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     """
     FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium)
+    + дедуп по signature, чтобы не ловить CardinalityViolation.
     """
     ensure_schema()
 
     driver, tmp_dir = _make_driver()
     try:
         driver.get(_solscan_token_url())
-
-        # иногда нужно кликнуть вкладку Transfers
         _try_click_transfers_tab(driver)
 
         wait = WebDriverWait(driver, 30)
@@ -479,10 +477,13 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         wait.until(_has_any_rows)
 
         rows = _extract_rows(driver)[: max(1, int(limit_rows))]
-        parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
+
+        parsed: List[
+            Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]
+        ] = []
         for r in rows:
             item = _parse_row(r)
-            if item:
+            if item and item[0]:
                 parsed.append(item)
 
     finally:
@@ -491,43 +492,51 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-if not parsed:
-    return {"inserted_or_updated": 0, "note": "No rows parsed."}
+    if not parsed:
+        return {"inserted_or_updated": 0, "note": "No rows parsed from Solscan page."}
 
-# дедуп по signature, сохраняем порядок (берём первое вхождение)
-uniq: Dict[str, Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = {}
-for row in parsed:
-    sig = row[0]
-    if sig and sig not in uniq:
-        uniq[sig] = row
+    # дедуп по signature (берём первое вхождение)
+    uniq: Dict[
+        str, Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]
+    ] = {}
+    for row in parsed:
+        sig = row[0]
+        if sig and sig not in uniq:
+            uniq[sig] = row
+    parsed = list(uniq.values())
 
-parsed = list(uniq.values())
+    if not parsed:
+        return {
+            "inserted_or_updated": 0,
+            "note": "All parsed rows were duplicates/empty signatures.",
+        }
 
-if not parsed:
-    return {"inserted_or_updated": 0, "note": "All parsed rows were duplicates/empty signatures."}
-
-conn = _get_conn()
-try:
-    with conn.cursor() as cur:
-        sql = """
-        INSERT INTO solscan_transactions
-          (signature, time, action, from_address, to_address, amount, value, token)
-        VALUES %s
-        ON CONFLICT (signature) DO UPDATE SET
-          time         = EXCLUDED.time,
-          action       = EXCLUDED.action,
-          from_address = EXCLUDED.from_address,
-          to_address   = EXCLUDED.to_address,
-          amount       = EXCLUDED.amount,
-          value        = EXCLUDED.value,
-          token        = EXCLUDED.token
-        """
-        execute_values(cur, sql, parsed, page_size=100)
-    conn.commit()
-finally:
-    _put_conn(conn)
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            sql = """
+            INSERT INTO solscan_transactions
+              (signature, time, action, from_address, to_address, amount, value, token)
+            VALUES %s
+            ON CONFLICT (signature) DO UPDATE SET
+              time         = EXCLUDED.time,
+              action       = EXCLUDED.action,
+              from_address = EXCLUDED.from_address,
+              to_address   = EXCLUDED.to_address,
+              amount       = EXCLUDED.amount,
+              value        = EXCLUDED.value,
+              token        = EXCLUDED.token
+            """
+            execute_values(cur, sql, parsed, page_size=100)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_conn(conn)
 
     return {"inserted_or_updated": len(parsed)}
+
 
 # --------------------
 # BOT WRITE FUNCTIONS
@@ -725,5 +734,6 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
 
