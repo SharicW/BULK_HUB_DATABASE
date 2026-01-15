@@ -5,11 +5,8 @@ import logging
 
 from app.stats import parse_sanctum, parse_solscan
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(levelname)s:%(name)s:%(message)s",
-)
-logger = logging.getLogger("parsers")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+log = logging.getLogger("parsers")
 
 INTERVAL = int(os.getenv("PARSER_INTERVAL_SEC", "300"))
 RUN_SANCTUM = os.getenv("RUN_SANCTUM", "1") == "1"
@@ -17,24 +14,24 @@ RUN_SOLSCAN = os.getenv("RUN_SOLSCAN", "1") == "1"
 
 
 def main() -> None:
-    logger.info("[loop] started interval=%ss", INTERVAL)
+    log.info("[loop] started interval=%ss sanctum=%s solscan=%s", INTERVAL, RUN_SANCTUM, RUN_SOLSCAN)
 
     while True:
         if RUN_SANCTUM:
-            logger.info("[sanctum] start")
             try:
+                log.info("[sanctum] start")
                 res = parse_sanctum()
-                logger.info("[sanctum] ok %s", res)
+                log.info("[sanctum] ok %s", res)
             except Exception:
-                logger.exception("[sanctum] ERROR")
+                log.exception("[sanctum] ERROR")
 
         if RUN_SOLSCAN:
-            logger.info("[solscan] start")
             try:
-                res = parse_solscan(limit_rows=25)
-                logger.info("[solscan] ok %s", res)
+                log.info("[solscan] start")
+                res = parse_solscan(limit_rows=20)
+                log.info("[solscan] ok %s", res)
             except Exception:
-                logger.exception("[solscan] ERROR")
+                log.exception("[solscan] ERROR")
 
         time.sleep(INTERVAL)
 
