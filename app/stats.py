@@ -400,9 +400,16 @@ def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
         "exclude_amount_zero": "true",
     }
 
-    r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
+r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
+
+if r.status_code != 200:
+    raise RuntimeError(
+        f"Solscan HTTP {r.status_code}. key_present={bool(_get_solscan_key())} "
+        f"response={r.text[:400]}"
+    )
+
+data = r.json()
+
 
     if not isinstance(data, dict) or not data.get("success"):
         raise RuntimeError(f"Solscan API returned success=false: {json.dumps(data)[:500]}")
@@ -673,4 +680,5 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
