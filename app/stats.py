@@ -736,4 +736,26 @@ def get_community_stats() -> Dict[str, int]:
     }
 
 
+def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Возвращает последние транзакции из таблицы solscan_transactions.
+    """
+    ensure_schema()
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT signature, time, action, from_address, to_address, amount, value, token
+                FROM solscan_transactions
+                ORDER BY time DESC NULLS LAST
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        _put_conn(conn)
+
+
 
