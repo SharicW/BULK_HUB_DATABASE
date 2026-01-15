@@ -3,7 +3,7 @@ import time
 import signal
 import logging
 
-from app.stats import parse_solscan
+from stats import parse_solscan
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
