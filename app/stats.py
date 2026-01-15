@@ -2,7 +2,6 @@
 import os
 import re
 import json
-import time
 import shutil
 import tempfile
 import logging
@@ -131,18 +130,15 @@ def ensure_schema() -> None:
         try:
             with conn.cursor() as cur:
                 # Core tables (если вдруг нет)
-                cur.execute(
-                    """
+                cur.execute("""
                 CREATE TABLE IF NOT EXISTS discord_users (
                     user_id BIGINT,
                     username TEXT,
                     message_count BIGINT DEFAULT 0,
                     last_active TIMESTAMPTZ DEFAULT now()
                 );
-                """
-                )
-                cur.execute(
-                    """
+                """)
+                cur.execute("""
                 CREATE TABLE IF NOT EXISTS telegram_users (
                     user_id BIGINT,
                     username TEXT,
@@ -150,12 +146,10 @@ def ensure_schema() -> None:
                     message_count BIGINT DEFAULT 0,
                     last_active TIMESTAMPTZ DEFAULT now()
                 );
-                """
-                )
+                """)
 
-                # Sanctum history
-                cur.execute(
-                    """
+                # Sanctum history (3 значения + время)
+                cur.execute("""
                 CREATE TABLE IF NOT EXISTS sanctum_bulk_metrics (
                     id BIGSERIAL PRIMARY KEY,
                     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -163,18 +157,14 @@ def ensure_schema() -> None:
                     bulk_to_sol TEXT,
                     total_holders TEXT
                 );
-                """
-                )
-                cur.execute(
-                    """
+                """)
+                cur.execute("""
                 CREATE INDEX IF NOT EXISTS sanctum_bulk_metrics_fetched_at_idx
                 ON sanctum_bulk_metrics (fetched_at DESC);
-                """
-                )
+                """)
 
-                # Solscan transactions (8 columns)
-                cur.execute(
-                    """
+                # Solscan transfers (ровно 8 столбцов)
+                cur.execute("""
                 CREATE TABLE IF NOT EXISTS solscan_transactions (
                     signature     TEXT PRIMARY KEY,
                     time          TEXT,
@@ -185,8 +175,7 @@ def ensure_schema() -> None:
                     value         NUMERIC,
                     token         TEXT
                 );
-                """
-                )
+                """)
 
             conn.commit()
             _schema_ready = True
@@ -229,19 +218,43 @@ def _unix_to_iso(ts: Any) -> str:
         return str(ts) if ts is not None else ""
 
 
+def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]:
+    amt = _to_decimal(raw_amount)
+    if amt is None:
+        return None
+
+    try:
+        dec = int(token_decimals) if token_decimals is not None else None
+    except Exception:
+        dec = None
+
+    # В Solscan transfer amount нужно делить на 10^token_decimals :contentReference[oaicite:1]{index=1}
+    if dec is not None:
+        try:
+            return amt / (Decimal(10) ** Decimal(dec))
+        except Exception:
+            return amt
+    return amt
+
+
 # --------------------
 # SELENIUM (ТОЛЬКО ДЛЯ SANCTUM)
 # --------------------
 def _make_driver() -> webdriver.Chrome:
     """
     Драйвер для Railway контейнера.
-    Solscan лучше НЕ парсить Selenium'ом (Chrome часто падает по памяти).
+    Sanctum оставляем на Selenium.
     """
-    chrome_bin = os.getenv("CHROME_BIN") or shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
+    chrome_bin = (
+        os.getenv("CHROME_BIN")
+        or shutil.which("chromium")
+        or shutil.which("google-chrome")
+        or shutil.which("chrome")
+    )
     chromedriver_path = os.getenv("CHROMEDRIVER_PATH") or shutil.which("chromedriver")
 
     if not chromedriver_path:
-        raise RuntimeError("chromedriver not found in PATH. Install it in nixpacks (chromedriver)")
+        raise RuntimeError("chromedriver not found in PATH. Install it via nixpacks (chromedriver).")
 
     tmp_dir = tempfile.mkdtemp(prefix="chrome-data-")
 
@@ -253,34 +266,44 @@ def _make_driver() -> webdriver.Chrome:
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--lang=en-US")
     opts.add_argument("--remote-debugging-port=0")
-    opts.add_argument(f"--user-data-dir={tmp_dir}")
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
+    opts.add_argument(f"--user-data-dir={tmp_dir}")
 
-    # меньше памяти: вырубаем картинки
-    prefs = {
+    # меньше памяти: выключаем картинки
+    opts.add_experimental_option("prefs", {
         "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
-    }
-    opts.add_experimental_option("prefs", prefs)
+    })
 
     if chrome_bin:
         opts.binary_location = chrome_bin
 
     service = ChromeService(executable_path=chromedriver_path)
-    return webdriver.Chrome(service=service, options=opts)
+    driver = webdriver.Chrome(service=service, options=opts)
+
+    # чтобы потом подчистить temp
+    driver._tmp_user_data_dir = tmp_dir  # type: ignore[attr-defined]
+    return driver
+
+
+def _cleanup_driver_tmp(driver: webdriver.Chrome) -> None:
+    tmp_dir = getattr(driver, "_tmp_user_data_dir", None)
+    if tmp_dir and isinstance(tmp_dir, str):
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # --------------------
 # SANCTUM PARSER (selenium)
 # --------------------
-SANCTUM_URL = "https://app.sanctum.so/explore/BulkSOL"
+SANCTUM_URL = os.getenv("SANCTUM_URL", "https://app.sanctum.so/explore/BulkSOL")
 
 
 def _find_value_near_label(driver, label: str) -> str:
     xpaths = [
         f"//*[contains(normalize-space(.), '{label}')]/following::*[1]",
         f"//*[contains(normalize-space(.), '{label}')]/following-sibling::*[1]",
+        f"//*[contains(normalize-space(.), '{label}')]/ancestor::*[1]//*[self::div or self::span][2]",
     ]
     for xp in xpaths:
         try:
@@ -303,22 +326,29 @@ def parse_sanctum() -> Dict[str, Any]:
         wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(., 'Total staked')]")))
 
         total_staked = _find_value_near_label(driver, "Total staked")
-        # иногда текст “1 BulkSOL = ...” меняется — делаем 2 попытки
-        bulk_to_sol = _find_value_near_label(driver, "1 BulkSOL") or _find_value_near_label(driver, "BulkSOL =")
+
+        # Sanctum иногда меняет строку — делаем несколько вариантов
+        bulk_to_sol = (
+            _find_value_near_label(driver, "1 BulkSOL")
+            or _find_value_near_label(driver, "BulkSOL =")
+            or _find_value_near_label(driver, "BulkSOL")
+        )
+
         total_holders = _find_value_near_label(driver, "Total holders")
+
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        finally:
+            _cleanup_driver_tmp(driver)
 
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 INSERT INTO sanctum_bulk_metrics (total_staked, bulk_to_sol, total_holders)
                 VALUES (%s, %s, %s)
-                """,
-                (total_staked, bulk_to_sol, total_holders),
-            )
+            """, (total_staked, bulk_to_sol, total_holders))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -334,14 +364,12 @@ def get_latest_sanctum() -> Dict[str, Any]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT fetched_at, total_staked, bulk_to_sol, total_holders
                 FROM sanctum_bulk_metrics
                 ORDER BY fetched_at DESC
                 LIMIT 1
-                """
-            )
+            """)
             return cur.fetchone() or {"fetched_at": None, "total_staked": None, "bulk_to_sol": None, "total_holders": None}
     finally:
         _put_conn(conn)
@@ -350,31 +378,39 @@ def get_latest_sanctum() -> Dict[str, Any]:
 # --------------------
 # SOLSCAN PARSER (API, БЕЗ SELENIUM)
 # --------------------
-# Можно переопределить через Railway Variables:
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
-SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY")  # <-- ВАЖНО: добавить в Railway Variables
-
+SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY")  # добавить в Railway Variables
 SOLSCAN_BASE = "https://pro-api.solscan.io"
 
 
 def _solscan_headers() -> Dict[str, str]:
     if not SOLSCAN_API_KEY:
         raise RuntimeError("SOLSCAN_API_KEY is not set. Add it in Railway Variables.")
-    # Solscan Pro API key передаётся заголовком token: yourapikey
     return {
-        "content-type": "application/json",
         "accept": "application/json",
         "token": SOLSCAN_API_KEY,
     }
 
 
+def _coerce_page_size(n: int) -> int:
+    # Solscan принимает только: 10,20,30,40,60,100 :contentReference[oaicite:2]{index=2}
+    allowed = [10, 20, 30, 40, 60, 100]
+    n = max(1, int(n))
+    for a in allowed:
+        if n <= a:
+            return a
+    return 100
+
+
 def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
-    url = f"{SOLSCAN_BASE}/v2.0/token/transfer"
+    url = f"{SOLSCAN_BASE}/v2.0/token/transfer"  # :contentReference[oaicite:3]{index=3}
+    page_size = _coerce_page_size(limit_rows)
+
     params = {
         "address": SOLSCAN_TOKEN_MINT,
         "page": 1,
-        "page_size": min(int(limit_rows), 100),
+        "page_size": page_size,
         "sort_by": "block_time",
         "sort_order": "desc",
         "exclude_amount_zero": "true",
@@ -382,35 +418,16 @@ def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
 
     r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
     r.raise_for_status()
+
     data = r.json()
-    if not data.get("success"):
+    if not isinstance(data, dict) or not data.get("success"):
         raise RuntimeError(f"Solscan API returned success=false: {json.dumps(data)[:500]}")
     return data.get("data") or []
 
 
-def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]:
-    amt = _to_decimal(raw_amount)
-    if amt is None:
-        return None
-    try:
-        dec = int(token_decimals) if token_decimals is not None else None
-    except Exception:
-        dec = None
-
-    # если amount пришёл в “минимальных единицах” (часто большое целое) — нормализуем
-    if dec is not None:
-        s = str(raw_amount).strip()
-        if s.isdigit():
-            try:
-                return amt / (Decimal(10) ** Decimal(dec))
-            except Exception:
-                return amt
-    return amt
-
-
 def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
     """
-    Забирает последние transfer'ы через Solscan Pro API и upsert'ит в solscan_transactions по signature.
+    Берём transfer'ы через Solscan Pro API и upsert'им в solscan_transactions по signature.
     """
     ensure_schema()
 
@@ -418,20 +435,20 @@ def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
 
     parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
     for it in rows:
-        signature = it.get("trans_id") or it.get("signature") or ""
+        signature = it.get("trans_id") or ""
         if not signature:
             continue
 
+        # Solscan отдаёт time (string) и block_time (unix) :contentReference[oaicite:4]{index=4}
         iso_time = it.get("time") or _unix_to_iso(it.get("block_time"))
-        action = it.get("activity_type") or it.get("action") or "TRANSFER"
+        action = it.get("activity_type") or "TRANSFER"
         from_addr = it.get("from_address") or ""
         to_addr = it.get("to_address") or ""
+
         amount = _normalize_amount(it.get("amount"), it.get("token_decimals"))
+        value = _to_decimal(it.get("value"))  # часто отсутствует -> None
 
-        # value: если Solscan вернёт value — возьмём, иначе NULL
-        value = _to_decimal(it.get("value"))
-
-        token = SOLSCAN_TOKEN_SYMBOL
+        token = it.get("token_symbol") or SOLSCAN_TOKEN_SYMBOL
         parsed.append((signature, iso_time, str(action), from_addr, to_addr, amount, value, token))
 
     if not parsed:
@@ -469,15 +486,12 @@ def get_latest_solscan(limit: int = 25) -> List[Dict[str, Any]]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT signature, time, action, from_address, to_address, amount, value, token
                 FROM solscan_transactions
                 ORDER BY time DESC NULLS LAST
                 LIMIT %s
-                """,
-                (limit,),
-            )
+            """, (limit,))
             return cur.fetchall()
     finally:
         _put_conn(conn)
@@ -492,24 +506,18 @@ def add_discord_message(user_id: int, username: str) -> None:
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     UPDATE discord_users
                     SET message_count = COALESCE(message_count, 0) + 1,
                         username = %s,
                         last_active = now()
                     WHERE user_id = %s
-                    """,
-                    (username, user_id),
-                )
+                """, (username, user_id))
                 if cur.rowcount == 0:
-                    cur.execute(
-                        """
+                    cur.execute("""
                         INSERT INTO discord_users (user_id, username, message_count, last_active)
                         VALUES (%s, %s, 1, now())
-                        """,
-                        (user_id, username),
-                    )
+                    """, (user_id, username))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -526,25 +534,19 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     UPDATE telegram_users
                     SET message_count = COALESCE(message_count, 0) + 1,
                         username = %s,
                         first_name = %s,
                         last_active = now()
                     WHERE user_id = %s
-                    """,
-                    (username, first_name, user_id),
-                )
+                """, (username, first_name, user_id))
                 if cur.rowcount == 0:
-                    cur.execute(
-                        """
+                    cur.execute("""
                         INSERT INTO telegram_users (user_id, username, first_name, message_count, last_active)
                         VALUES (%s, %s, %s, 1, now())
-                        """,
-                        (user_id, username, first_name),
-                    )
+                    """, (user_id, username, first_name))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -563,19 +565,16 @@ def get_tg_user(username: str) -> Optional[Dict[str, Any]]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT COALESCE(username, first_name, 'ID' || user_id) AS username, message_count
                 FROM telegram_users
                 WHERE COALESCE(username, first_name, '') ILIKE %s
                 ORDER BY message_count DESC NULLS LAST
                 LIMIT 1
-                """,
-                (f"%{username}%",),
-            )
-            tg = cur.fetchone()
-            if tg:
-                return {"platform": "TG", "username": tg["username"], "messages": tg["message_count"]}
+            """, (f"%{username}%",))
+            row = cur.fetchone()
+            if row:
+                return {"platform": "TG", "username": row["username"], "messages": row["message_count"]}
             return None
     finally:
         _put_conn(conn)
@@ -586,45 +585,37 @@ def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT username, message_count
                 FROM discord_users
                 WHERE COALESCE(username, '') ILIKE %s
                 ORDER BY message_count DESC NULLS LAST
                 LIMIT 1
-                """,
-                (f"%{username}%",),
-            )
-            dc = cur.fetchone()
-            if dc:
-                return {"platform": "DC", "username": dc["username"], "messages": dc["message_count"]}
+            """, (f"%{username}%",))
+            row = cur.fetchone()
+            if row:
+                return {"platform": "DC", "username": row["username"], "messages": row["message_count"]}
             return None
     finally:
         _put_conn(conn)
 
 
 # --------------------
-# TOP/STATS (оставил как было)
+# TOP/STATS
 # --------------------
 def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
     ensure_schema()
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT user_id, username, message_count
                 FROM discord_users
                 ORDER BY message_count DESC NULLS LAST
                 LIMIT %s
-                """,
-                (limit,),
-            )
+            """, (limit,))
             rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [
-                {"error": "Нет данных"}
-            ]
+            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
@@ -634,22 +625,16 @@ def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    user_id,
-                    COALESCE(username, first_name, 'ID' || user_id) AS username,
-                    message_count
+            cur.execute("""
+                SELECT user_id,
+                       COALESCE(username, first_name, 'ID' || user_id) AS username,
+                       message_count
                 FROM telegram_users
                 ORDER BY message_count DESC NULLS LAST
                 LIMIT %s
-                """,
-                (limit,),
-            )
+            """, (limit,))
             rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [
-                {"error": "Нет данных"}
-            ]
+            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
@@ -659,13 +644,11 @@ def get_discord_stats() -> Dict[str, int]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT COUNT(*) AS total_users,
                        COALESCE(SUM(message_count), 0) AS messages_total
                 FROM discord_users
-                """
-            )
+            """)
             row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
             return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
     finally:
@@ -677,13 +660,11 @@ def get_telegram_stats() -> Dict[str, int]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT COUNT(*) AS total_users,
                        COALESCE(SUM(message_count), 0) AS messages_total
                 FROM telegram_users
-                """
-            )
+            """)
             row = cur.fetchone() or {"total_users": 0, "messages_total": 0}
             return {"total_users": int(row["total_users"]), "messages_total": int(row["messages_total"])}
     finally:
