@@ -1,2 +1,0 @@
-[phases.setup]
-nixPkgs = ["python3", "chromium", "chromedriver", "libx11", "libxcomposite", "libxrandr", "libgbm", "libasound", "libxss", "fonts-liberation"]
