@@ -491,32 +491,41 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    if not parsed:
-        return {"inserted_or_updated": 0, "note": "No rows parsed from Solscan page (UI may have changed or blocked)."}
+if not parsed:
+    return {"inserted_or_updated": 0, "note": "No rows parsed."}
 
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            sql = """
-            INSERT INTO solscan_transactions
-              (signature, time, action, from_address, to_address, amount, value, token)
-            VALUES %s
-            ON CONFLICT (signature) DO UPDATE SET
-              time         = EXCLUDED.time,
-              action       = EXCLUDED.action,
-              from_address = EXCLUDED.from_address,
-              to_address   = EXCLUDED.to_address,
-              amount       = EXCLUDED.amount,
-              value        = EXCLUDED.value,
-              token        = EXCLUDED.token
-            """
-            execute_values(cur, sql, parsed, page_size=100)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _put_conn(conn)
+# дедуп по signature, сохраняем порядок (берём первое вхождение)
+uniq: Dict[str, Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = {}
+for row in parsed:
+    sig = row[0]
+    if sig and sig not in uniq:
+        uniq[sig] = row
+
+parsed = list(uniq.values())
+
+if not parsed:
+    return {"inserted_or_updated": 0, "note": "All parsed rows were duplicates/empty signatures."}
+
+conn = _get_conn()
+try:
+    with conn.cursor() as cur:
+        sql = """
+        INSERT INTO solscan_transactions
+          (signature, time, action, from_address, to_address, amount, value, token)
+        VALUES %s
+        ON CONFLICT (signature) DO UPDATE SET
+          time         = EXCLUDED.time,
+          action       = EXCLUDED.action,
+          from_address = EXCLUDED.from_address,
+          to_address   = EXCLUDED.to_address,
+          amount       = EXCLUDED.amount,
+          value        = EXCLUDED.value,
+          token        = EXCLUDED.token
+        """
+        execute_values(cur, sql, parsed, page_size=100)
+    conn.commit()
+finally:
+    _put_conn(conn)
 
     return {"inserted_or_updated": len(parsed)}
 
@@ -716,4 +725,5 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
