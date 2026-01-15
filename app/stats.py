@@ -371,89 +371,128 @@ def get_latest_sanctum() -> Dict[str, Any]:
 
 
 # --------------------
-# SOLSCAN PARSER (API, БЕЗ SELENIUM)
+# SOLSCAN PARSER (FREE: selenium scrape, no API key)
 # --------------------
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
-SOLSCAN_BASE = "https://pro-api.solscan.io"
 
 
-def _get_solscan_key() -> str:
-    return (os.getenv("SOLSCAN_API_KEY") or "").strip()
+def _solscan_token_url() -> str:
+    return f"https://solscan.io/token/{SOLSCAN_TOKEN_MINT}"
 
 
-def _solscan_headers() -> Dict[str, str]:
-    key = _get_solscan_key()
-    if not key:
-        raise RuntimeError("SOLSCAN_API_KEY is empty (after strip). Check Railway Variables and restart service.")
-    return {"accept": "application/json", "token": key}
+def _try_click_transfers_tab(driver) -> None:
+    # Solscan UI может быть разной: кнопка/вкладка "Transfers"
+    xps = [
+        "//button[contains(., 'Transfers')]",
+        "//a[contains(., 'Transfers')]",
+        "//*[contains(@role,'tab') and contains(., 'Transfers')]",
+    ]
+    for xp in xps:
+        try:
+            el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.XPATH, xp)))
+            el.click()
+            return
+        except Exception:
+            continue
 
 
-def _coerce_page_size(n: int) -> int:
-    allowed = [10, 20, 30, 40, 60, 100]
-    n = max(1, int(n))
-    for a in allowed:
-        if n <= a:
-            return a
-    return 100
+def _extract_rows(driver) -> List[webdriver.remote.webelement.WebElement]:
+    # 1) таблица
+    trs = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+    if trs:
+        return trs
+
+    # 2) data-grid (часто у них именно так)
+    rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row']")
+    # обычно первая строка — header
+    if len(rows) > 1:
+        return rows[1:]
+    return []
 
 
-def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
-    url = f"{SOLSCAN_BASE}/v2.0/token/transfer"
-    page_size = _coerce_page_size(limit_rows)
+def _parse_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]]:
+    # Пытаемся вытащить signature из ссылки /tx/...
+    signature = ""
+    try:
+        a = row.find_element(By.CSS_SELECTOR, "a[href^='/tx/']")
+        href = a.get_attribute("href") or ""
+        signature = href.split("/tx/")[-1].split("?")[0].strip()
+    except Exception:
+        signature = ""
 
-    params = {
-        "address": SOLSCAN_TOKEN_MINT,
-        "page": 1,
-        "page_size": page_size,
-        "sort_by": "block_time",
-        "sort_order": "desc",
-        "exclude_amount_zero": "true",
-    }
+    if not signature:
+        return None
 
-    # временно для диагностики (не логируем сам ключ!)
-    key = _get_solscan_key()
-    logger.info("SOLSCAN_API_KEY present=%s len=%s", bool(key), len(key))
+    # Собираем ячейки
+    cells_text: List[str] = []
+    cells = row.find_elements(By.CSS_SELECTOR, "td")
+    if not cells:
+        cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
 
-    r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
+    for c in cells:
+        t = _clean_spaces(c.text)
+        if t:
+            cells_text.append(t)
 
-    if r.status_code != 200:
-        raise RuntimeError(f"Solscan HTTP {r.status_code}. response={r.text[:400]}")
+    # Очень приблизительная разметка (у Solscan может меняться),
+    # поэтому берём “что есть” и стараемся не падать.
+    # Обычно: Time | Action | From | To | Amount ...
+    time_txt = cells_text[0] if len(cells_text) > 0 else ""
+    action = cells_text[1] if len(cells_text) > 1 else "TRANSFER"
+    from_addr = cells_text[2] if len(cells_text) > 2 else ""
+    to_addr = cells_text[3] if len(cells_text) > 3 else ""
 
-    data = r.json()
-    if not isinstance(data, dict) or not data.get("success"):
-        raise RuntimeError(f"Solscan API success=false: {json.dumps(data)[:500]}")
+    # Amount (если есть) — пробуем найти первое число в конце списка
+    amount = None
+    for t in reversed(cells_text):
+        d = _to_decimal(t)
+        if d is not None:
+            amount = d
+            break
 
-    return data.get("data") or []
+    # value на сайте может быть в $, но часто отсутствует — оставим None
+    value = None
+    token = SOLSCAN_TOKEN_SYMBOL
+
+    return (signature, time_txt, action, from_addr, to_addr, amount, value, token)
 
 
-def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
+def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     """
-    Берём transfer'ы через Solscan Pro API и upsert'им в solscan_transactions по signature.
+    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium)
     """
     ensure_schema()
 
-    rows = _solscan_get_token_transfers(limit_rows)
+    driver, tmp_dir = _make_driver()
+    try:
+        driver.get(_solscan_token_url())
 
-    parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
-    for it in rows:
-        signature = it.get("trans_id") or it.get("signature") or ""
-        if not signature:
-            continue
+        # иногда нужно кликнуть вкладку Transfers
+        _try_click_transfers_tab(driver)
 
-        iso_time = it.get("time") or _unix_to_iso(it.get("block_time"))
-        action = it.get("activity_type") or it.get("action") or "TRANSFER"
-        from_addr = it.get("from_address") or ""
-        to_addr = it.get("to_address") or ""
+        wait = WebDriverWait(driver, 30)
 
-        amount = _normalize_amount(it.get("amount"), it.get("token_decimals"))
-        value = _to_decimal(it.get("value"))
+        def _has_any_rows(d):
+            return len(_extract_rows(d)) > 0
 
-        token = it.get("token_symbol") or SOLSCAN_TOKEN_SYMBOL
-        parsed.append((signature, iso_time, str(action), from_addr, to_addr, amount, value, token))
+        wait.until(_has_any_rows)
+
+        rows = _extract_rows(driver)[: max(1, int(limit_rows))]
+        parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
+        for r in rows:
+            item = _parse_row(r)
+            if item:
+                parsed.append(item)
+
+    finally:
+        try:
+            driver.quit()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if not parsed:
-        return {"inserted_or_updated": 0, "note": "No rows from Solscan API."}
+        return {"inserted_or_updated": 0, "note": "No rows parsed from Solscan page (UI may have changed or blocked)."}
 
     conn = _get_conn()
     try:
@@ -480,26 +519,6 @@ def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
         _put_conn(conn)
 
     return {"inserted_or_updated": len(parsed)}
-
-
-def get_latest_solscan(limit: int = 25) -> List[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT signature, time, action, from_address, to_address, amount, value, token
-                FROM solscan_transactions
-                ORDER BY time DESC NULLS LAST
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            return cur.fetchall()
-    finally:
-        _put_conn(conn)
-
 
 # --------------------
 # BOT WRITE FUNCTIONS
@@ -697,3 +716,4 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
