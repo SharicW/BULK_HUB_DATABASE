@@ -4,7 +4,7 @@ import signal
 import logging
 from typing import Optional
 
-from app.stats import parse_sanctum
+from stats import parse_sanctum
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
