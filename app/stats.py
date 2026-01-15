@@ -378,6 +378,12 @@ def get_latest_sanctum() -> Dict[str, Any]:
 # --------------------
 # SOLSCAN PARSER (API, БЕЗ SELENIUM)
 # --------------------
+# --------------------
+# SOLSCAN PARSER (API, БЕЗ SELENIUM)
+# --------------------
+import requests
+import json
+
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
 SOLSCAN_API_KEY = os.getenv("SOLSCAN_API_KEY")  # добавить в Railway Variables
@@ -394,7 +400,7 @@ def _solscan_headers() -> Dict[str, str]:
 
 
 def _coerce_page_size(n: int) -> int:
-    # Solscan принимает только: 10,20,30,40,60,100 :contentReference[oaicite:2]{index=2}
+    # Solscan принимает только: 10, 20, 30, 40, 60, 100
     allowed = [10, 20, 30, 40, 60, 100]
     n = max(1, int(n))
     for a in allowed:
@@ -404,7 +410,7 @@ def _coerce_page_size(n: int) -> int:
 
 
 def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
-    url = f"{SOLSCAN_BASE}/v2.0/token/transfer"  # :contentReference[oaicite:3]{index=3}
+    url = f"{SOLSCAN_BASE}/v2.0/token/transfer"
     page_size = _coerce_page_size(limit_rows)
 
     params = {
@@ -418,28 +424,29 @@ def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
 
     r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
     r.raise_for_status()
-
     data = r.json()
+
     if not isinstance(data, dict) or not data.get("success"):
         raise RuntimeError(f"Solscan API returned success=false: {json.dumps(data)[:500]}")
+
     return data.get("data") or []
 
 
 def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
     """
-    Берём transfer'ы через Solscan Pro API и upsert'им в solscan_transactions по signature.
+    Забирает transfer'ы через Solscan Pro API и upsert'ит в solscan_transactions по signature.
     """
     ensure_schema()
 
     rows = _solscan_get_token_transfers(limit_rows)
 
     parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
+
     for it in rows:
         signature = it.get("trans_id") or ""
         if not signature:
             continue
 
-        # Solscan отдаёт time (string) и block_time (unix) :contentReference[oaicite:4]{index=4}
         iso_time = it.get("time") or _unix_to_iso(it.get("block_time"))
         action = it.get("activity_type") or "TRANSFER"
         from_addr = it.get("from_address") or ""
@@ -478,23 +485,9 @@ def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
     finally:
         _put_conn(conn)
 
+    # если ты попросил 25, реально запрос уйдёт на 30 (ограничение API),
+    # но в базу всё равно апсертятся корректные строки.
     return {"inserted_or_updated": len(parsed)}
-
-
-def get_latest_solscan(limit: int = 25) -> List[Dict[str, Any]]:
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT signature, time, action, from_address, to_address, amount, value, token
-                FROM solscan_transactions
-                ORDER BY time DESC NULLS LAST
-                LIMIT %s
-            """, (limit,))
-            return cur.fetchall()
-    finally:
-        _put_conn(conn)
 
 
 # --------------------
@@ -681,4 +674,5 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
