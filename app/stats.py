@@ -46,7 +46,9 @@ def _get_dsn() -> str:
         return db_url
 
     if not DB_CONFIG.get("password"):
-        raise ValueError("DATABASE_URL not found and local PGPASSWORD is empty. Set DATABASE_URL or PGPASSWORD.")
+        raise ValueError(
+            "DATABASE_URL not found and local PGPASSWORD is empty. Set DATABASE_URL or PGPASSWORD."
+        )
 
     return (
         f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
@@ -129,7 +131,6 @@ def ensure_schema() -> None:
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                # Лучше иметь PK по user_id, чтобы не плодить дубликаты
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS discord_users (
@@ -235,7 +236,6 @@ def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]
     except Exception:
         dec = None
 
-    # По докам Solscan transfer amount нужно делить на 10^token_decimals
     if dec is not None:
         try:
             return amt / (Decimal(10) ** Decimal(dec))
@@ -247,12 +247,17 @@ def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]
 # --------------------
 # SELENIUM (ТОЛЬКО ДЛЯ SANCTUM)
 # --------------------
-def _make_driver() -> webdriver.Chrome:
-    chrome_bin = os.getenv("CHROME_BIN") or shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
+def _make_driver() -> Tuple[webdriver.Chrome, str]:
+    chrome_bin = (
+        os.getenv("CHROME_BIN")
+        or shutil.which("chromium")
+        or shutil.which("google-chrome")
+        or shutil.which("chrome")
+    )
     chromedriver_path = os.getenv("CHROMEDRIVER_PATH") or shutil.which("chromedriver")
 
     if not chromedriver_path:
-        raise RuntimeError("chromedriver not found in PATH. Install it in nixpacks (chromedriver)")
+        raise RuntimeError("chromedriver not found in PATH. Install chromium + chromedriver in the image.")
 
     tmp_dir = tempfile.mkdtemp(prefix="chrome-data-")
 
@@ -278,7 +283,8 @@ def _make_driver() -> webdriver.Chrome:
         opts.binary_location = chrome_bin
 
     service = ChromeService(executable_path=chromedriver_path)
-    return webdriver.Chrome(service=service, options=opts)
+    driver = webdriver.Chrome(service=service, options=opts)
+    return driver, tmp_dir
 
 
 # --------------------
@@ -306,7 +312,7 @@ def _find_value_near_label(driver, label: str) -> str:
 def parse_sanctum() -> Dict[str, Any]:
     ensure_schema()
 
-    driver = _make_driver()
+    driver, tmp_dir = _make_driver()
     try:
         driver.get(SANCTUM_URL)
         wait = WebDriverWait(driver, 30)
@@ -316,7 +322,10 @@ def parse_sanctum() -> Dict[str, Any]:
         bulk_to_sol = _find_value_near_label(driver, "1 BulkSOL") or _find_value_near_label(driver, "BulkSOL =")
         total_holders = _find_value_near_label(driver, "Total holders")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     conn = _get_conn()
     try:
@@ -351,7 +360,12 @@ def get_latest_sanctum() -> Dict[str, Any]:
                 LIMIT 1
                 """
             )
-            return cur.fetchone() or {"fetched_at": None, "total_staked": None, "bulk_to_sol": None, "total_holders": None}
+            return cur.fetchone() or {
+                "fetched_at": None,
+                "total_staked": None,
+                "bulk_to_sol": None,
+                "total_holders": None,
+            }
     finally:
         _put_conn(conn)
 
@@ -361,24 +375,21 @@ def get_latest_sanctum() -> Dict[str, Any]:
 # --------------------
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
+SOLSCAN_BASE = "https://pro-api.solscan.io"
+
+
 def _get_solscan_key() -> str:
     return (os.getenv("SOLSCAN_API_KEY") or "").strip()
-SOLSCAN_BASE = "https://pro-api.solscan.io"
 
 
 def _solscan_headers() -> Dict[str, str]:
     key = _get_solscan_key()
     if not key:
         raise RuntimeError("SOLSCAN_API_KEY is empty (after strip). Check Railway Variables and restart service.")
-    return {
-        "accept": "application/json",
-        "token": key,
-    }
-
+    return {"accept": "application/json", "token": key}
 
 
 def _coerce_page_size(n: int) -> int:
-    # Enum из документации: 10, 20, 30, 40, 60, 100
     allowed = [10, 20, 30, 40, 60, 100]
     n = max(1, int(n))
     for a in allowed:
@@ -400,19 +411,19 @@ def _solscan_get_token_transfers(limit_rows: int) -> List[Dict[str, Any]]:
         "exclude_amount_zero": "true",
     }
 
-r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
+    # временно для диагностики (не логируем сам ключ!)
+    key = _get_solscan_key()
+    logger.info("SOLSCAN_API_KEY present=%s len=%s", bool(key), len(key))
 
-if r.status_code != 200:
-    raise RuntimeError(
-        f"Solscan HTTP {r.status_code}. key_present={bool(_get_solscan_key())} "
-        f"response={r.text[:400]}"
-    )
+    r = requests.get(url, headers=_solscan_headers(), params=params, timeout=30)
 
-data = r.json()
+    if r.status_code != 200:
+        raise RuntimeError(f"Solscan HTTP {r.status_code}. response={r.text[:400]}")
 
-
+    data = r.json()
     if not isinstance(data, dict) or not data.get("success"):
-        raise RuntimeError(f"Solscan API returned success=false: {json.dumps(data)[:500]}")
+        raise RuntimeError(f"Solscan API success=false: {json.dumps(data)[:500]}")
+
     return data.get("data") or []
 
 
@@ -436,7 +447,7 @@ def parse_solscan(limit_rows: int = 25) -> Dict[str, Any]:
         to_addr = it.get("to_address") or ""
 
         amount = _normalize_amount(it.get("amount"), it.get("token_decimals"))
-        value = _to_decimal(it.get("value"))  # часто отсутствует -> None
+        value = _to_decimal(it.get("value"))
 
         token = it.get("token_symbol") or SOLSCAN_TOKEN_SYMBOL
         parsed.append((signature, iso_time, str(action), from_addr, to_addr, amount, value, token))
@@ -611,7 +622,10 @@ def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
                 (limit,),
             )
             rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
+            return [
+                {"place": i + 1, "username": r["username"], "messages": r["message_count"]}
+                for i, r in enumerate(rows)
+            ] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
@@ -631,7 +645,10 @@ def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
                 (limit,),
             )
             rows = cur.fetchall()
-            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
+            return [
+                {"place": i + 1, "username": r["username"], "messages": r["message_count"]}
+                for i, r in enumerate(rows)
+            ] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
@@ -680,5 +697,3 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
-
-
