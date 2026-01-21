@@ -129,6 +129,7 @@ def ensure_schema() -> None:
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
+                # --- Discord / Telegram ---
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS discord_users (
@@ -151,6 +152,7 @@ def ensure_schema() -> None:
                     """
                 )
 
+                # --- Sanctum ---
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS sanctum_bulk_metrics (
@@ -169,7 +171,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # --- solscan_transactions ---
+                # --- Solscan ---
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS solscan_transactions (
@@ -186,11 +188,8 @@ def ensure_schema() -> None:
                     );
                     """
                 )
-
-                # Если таблица уже была создана раньше — добавим недостающие колонки
                 cur.execute("ALTER TABLE solscan_transactions ADD COLUMN IF NOT EXISTS event_ts TIMESTAMPTZ;")
-                cur.execute("ALTER TABLE solscan_transactions ADD COLUMN IF NOT EXISTS id BIGSERIAL;")  # безопасно, если уже есть
-                # Индексы/уникальность: не даём плодить одно и то же transfer-событие
+                cur.execute("ALTER TABLE solscan_transactions ADD COLUMN IF NOT EXISTS id BIGSERIAL;")
                 cur.execute(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS solscan_transactions_uniq_event
@@ -203,6 +202,149 @@ def ensure_schema() -> None:
                     ON solscan_transactions (event_ts DESC NULLS LAST);
                     """
                 )
+
+                # -----------------------------------------------------------------
+                # X PARSER SCHEMA (точно по BULK_HUB_X_PARSER/schema.sql)
+                # -----------------------------------------------------------------
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS communities (
+                        community_id TEXT PRIMARY KEY,
+                        created_at TIMESTAMPTZ DEFAULT now()
+                    );
+                    """
+                )
+
+                # key/value state (как у X-parser)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ingest_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMPTZ DEFAULT now()
+                    );
+                    """
+                )
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS community_tweets (
+                        tweet_id TEXT PRIMARY KEY,
+                        community_id TEXT NOT NULL,
+                        created_at TIMESTAMPTZ,
+                        url TEXT,
+                        text TEXT,
+                        author_id TEXT,
+                        author_username TEXT,
+                        author_name TEXT,
+                        raw_json JSONB,
+                        inserted_at TIMESTAMPTZ DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_ct_community_created
+                    ON community_tweets (community_id, created_at DESC);
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_ct_community_author
+                    ON community_tweets (community_id, lower(author_username));
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_ct_created
+                    ON community_tweets (created_at DESC);
+                    """
+                )
+
+                # на всякий (если когда-то была урезанная версия таблицы)
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS raw_json JSONB;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ DEFAULT now();")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS author_id TEXT;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS author_username TEXT;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS author_name TEXT;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS url TEXT;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS text TEXT;")
+                cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;")
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tweet_metrics_latest (
+                        tweet_id TEXT PRIMARY KEY,
+                        view_count BIGINT DEFAULT 0,
+                        like_count BIGINT DEFAULT 0,
+                        retweet_count BIGINT DEFAULT 0,
+                        reply_count BIGINT DEFAULT 0,
+                        quote_count BIGINT DEFAULT 0,
+                        bookmark_count BIGINT DEFAULT 0,
+                        updated_at TIMESTAMPTZ DEFAULT now(),
+                        raw_json JSONB
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_tml_updated
+                    ON tweet_metrics_latest (updated_at DESC);
+                    """
+                )
+                cur.execute("ALTER TABLE tweet_metrics_latest ADD COLUMN IF NOT EXISTS raw_json JSONB;")
+                cur.execute("ALTER TABLE tweet_metrics_latest ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id TEXT PRIMARY KEY,
+                        username TEXT UNIQUE,
+                        name TEXT,
+                        followers BIGINT DEFAULT 0,
+                        following BIGINT DEFAULT 0,
+                        profile_picture TEXT,
+                        verified_type TEXT,
+                        is_blue_verified BOOLEAN,
+                        updated_at TIMESTAMPTZ DEFAULT now(),
+                        raw_json JSONB
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_users_username_lower
+                    ON users (lower(username));
+                    """
+                )
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS raw_json JSONB;")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS community_members (
+                        community_id TEXT NOT NULL,
+                        user_id TEXT,
+                        username TEXT,
+                        name TEXT,
+                        followers BIGINT DEFAULT 0,
+                        following BIGINT DEFAULT 0,
+                        profile_picture TEXT,
+                        is_blue_verified BOOLEAN,
+                        updated_at TIMESTAMPTZ DEFAULT now(),
+                        raw_json JSONB,
+                        PRIMARY KEY (community_id, user_id)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_members_community_username_lower
+                    ON community_members (community_id, lower(username));
+                    """
+                )
+                cur.execute("ALTER TABLE community_members ADD COLUMN IF NOT EXISTS raw_json JSONB;")
+                cur.execute("ALTER TABLE community_members ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();")
 
             conn.commit()
             _schema_ready = True
@@ -276,12 +418,10 @@ def _parse_age_seconds(time_text: str) -> Optional[int]:
 
 
 def _guess_event_ts(time_text: str) -> Optional[datetime]:
-    # 1) "x mins ago" -> now - delta
     sec = _parse_age_seconds(time_text)
     if sec is not None:
         return datetime.now(timezone.utc) - timedelta(seconds=sec)
 
-    # 2) ISO / parseable date
     try:
         ms = datetime.fromisoformat(str(time_text).replace("Z", "+00:00"))
         if ms.tzinfo is None:
@@ -290,12 +430,34 @@ def _guess_event_ts(time_text: str) -> Optional[datetime]:
     except Exception:
         pass
 
-    # 3) Date.parse-like (очень грубо)
     try:
-        parsed = datetime.fromtimestamp(int(time_text), tz=timezone.utc)  # если вдруг unix
+        parsed = datetime.fromtimestamp(int(time_text), tz=timezone.utc)
         return parsed
     except Exception:
         return None
+
+
+def _get_x_community_id() -> Optional[str]:
+    # X-parser использует COMMUNITY_ID
+    return (
+        os.getenv("COMMUNITY_ID")
+        or os.getenv("X_COMMUNITY_ID")
+        or os.getenv("TWITTER_COMMUNITY_ID")
+    )
+
+
+def _x_engage_expr_sql() -> str:
+    # points = posts*5 + likes*2 + retweets*3 + replies*4 + quotes*3 + bookmarks*2 + floor(views/100)
+    return """
+      (COUNT(*) * 5
+       + COALESCE(SUM(tm.like_count),0) * 2
+       + COALESCE(SUM(tm.retweet_count),0) * 3
+       + COALESCE(SUM(tm.reply_count),0) * 4
+       + COALESCE(SUM(tm.quote_count),0) * 3
+       + COALESCE(SUM(tm.bookmark_count),0) * 2
+       + FLOOR(COALESCE(SUM(tm.view_count),0) / 100.0)
+      )::bigint
+    """
 
 
 # --------------------
@@ -446,24 +608,20 @@ def _try_click_transfers_tab(driver) -> None:
 
 
 def _collect_headers_and_rows(driver) -> Tuple[List[str], List[Any], str]:
-    # 1) table mode
     tables = driver.find_elements(By.CSS_SELECTOR, "table")
     for tbl in tables:
         rows = tbl.find_elements(By.CSS_SELECTOR, "tbody tr")
         if not rows:
             continue
         headers = [_clean_spaces(th.text) for th in tbl.find_elements(By.CSS_SELECTOR, "thead th")]
-        # ищем “похожую” таблицу
         if headers and any("time" in h.lower() for h in headers) and any("from" in h.lower() for h in headers):
             return headers, rows, "table"
 
-    # 2) grid mode (role-based)
     headers = [_clean_spaces(h.text) for h in driver.find_elements(By.CSS_SELECTOR, "div[role='columnheader']")]
     rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row']")
     if headers and len(rows) > 1:
         return headers, rows[1:], "grid"
 
-    # 3) fallback
     rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     return [], rows, "table"
 
@@ -523,20 +681,15 @@ def _extract_accounts(row) -> List[str]:
 
 
 def _split_amount_and_token(text: str) -> Tuple[Optional[Decimal], str, str]:
-    """
-    Возвращает (amount_decimal, token_symbol, raw_amount_string)
-    """
     raw = _clean_spaces(text)
     if not raw:
         return None, "", ""
 
-    # примеры: "5.819163 BULK", "+12 BULK", "5819163", "5,819,163 BULK"
     parts = raw.split()
     token = ""
     raw_amount = raw
 
     if len(parts) >= 2:
-        # токен обычно последним словом
         token = parts[-1]
         raw_amount = " ".join(parts[:-1])
 
@@ -545,9 +698,6 @@ def _split_amount_and_token(text: str) -> Tuple[Optional[Decimal], str, str]:
 
 
 def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
-    """
-    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium)
-    """
     ensure_schema()
 
     driver, tmp_dir = _make_driver()
@@ -561,7 +711,6 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         headers, rows, mode = _collect_headers_and_rows(driver)
         wait.until(lambda d: len(rows) > 0)
 
-        # попробуем вытащить decimals токена (если получится)
         token_decimals: Optional[int] = None
         try:
             dec_txt = _find_value_near_label(driver, "Decimals")
@@ -571,7 +720,6 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         except Exception:
             token_decimals = None
 
-        # обновим модель (после прогрузки)
         headers, rows, mode = _collect_headers_and_rows(driver)
         rows = rows[: max(1, int(limit_rows))]
 
@@ -586,12 +734,10 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             time_txt = _pick_field(m, ["Time", "Age", "Block Time"])
             action = _pick_field(m, ["Action", "Type"]) or "TRANSFER"
 
-            # from/to: лучше из ссылок
             accounts = _extract_accounts(r)
             from_addr = accounts[0] if len(accounts) > 0 else (_pick_field(m, ["From"]) or "")
             to_addr = accounts[1] if len(accounts) > 1 else (_pick_field(m, ["To"]) or "")
 
-            # amount/value/token
             amount_cell = _pick_field(m, ["Amount", "Change", "Change Amount"])
             value_cell = _pick_field(m, ["Value", "USD", "$"])
             token_cell = _pick_field(m, ["Token", "Symbol"])
@@ -599,20 +745,16 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             amt, tok_from_amt, raw_amt = _split_amount_and_token(amount_cell)
             token = (tok_from_amt or token_cell or SOLSCAN_TOKEN_SYMBOL).strip() or SOLSCAN_TOKEN_SYMBOL
 
-            # если amount пришёл "целым" и decimals известны — нормализуем (5819163 -> 5.819163 при decimals=6)
             if amt is not None and token_decimals is not None:
                 raw_digits = re.sub(r"[^0-9]", "", str(raw_amt))
                 has_dot = "." in str(raw_amt)
-                # масштабируем только если нет точки и число большое (чтобы не ломать "1")
                 if (not has_dot) and raw_digits and len(raw_digits) > token_decimals and amt >= (Decimal(10) ** Decimal(token_decimals)):
                     try:
                         amt = amt / (Decimal(10) ** Decimal(token_decimals))
                     except Exception:
                         pass
 
-            # value
             value = _to_decimal(value_cell)
-
             event_ts = _guess_event_ts(time_txt)
 
             parsed_rows.append((sig, time_txt, event_ts, str(action), from_addr, to_addr, amt, value, token))
@@ -651,9 +793,6 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
 
 
 def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
-    """
-    Возвращает последние транзакции из таблицы solscan_transactions (новые -> старые).
-    """
     ensure_schema()
     conn = _get_conn()
     try:
@@ -775,6 +914,89 @@ def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
         _put_conn(conn)
 
 
+def get_x_user(username: str) -> Optional[Dict[str, Any]]:
+    """
+    Поиск X пользователя и расчёт Engage Points.
+    Возвращаем `messages` = engage_points, чтобы фронт не переделывать.
+    """
+    ensure_schema()
+    community_id = _get_x_community_id()
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            engage_expr = _x_engage_expr_sql()
+
+            if community_id:
+                cur.execute(
+                    f"""
+                    SELECT
+                      lower(ct.author_username) AS username,
+                      COUNT(*)::bigint AS posts,
+                      COALESCE(SUM(tm.view_count),0)::bigint AS views,
+                      COALESCE(SUM(tm.like_count),0)::bigint AS likes,
+                      COALESCE(SUM(tm.retweet_count),0)::bigint AS retweets,
+                      COALESCE(SUM(tm.reply_count),0)::bigint AS replies,
+                      COALESCE(SUM(tm.quote_count),0)::bigint AS quotes,
+                      COALESCE(SUM(tm.bookmark_count),0)::bigint AS bookmarks,
+                      {engage_expr} AS engage_points
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.community_id = %s
+                      AND ct.author_username IS NOT NULL
+                      AND lower(ct.author_username) ILIKE %s
+                    GROUP BY lower(ct.author_username)
+                    ORDER BY engage_points DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (community_id, f"%{username.lower()}%"),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT
+                      lower(ct.author_username) AS username,
+                      COUNT(*)::bigint AS posts,
+                      COALESCE(SUM(tm.view_count),0)::bigint AS views,
+                      COALESCE(SUM(tm.like_count),0)::bigint AS likes,
+                      COALESCE(SUM(tm.retweet_count),0)::bigint AS retweets,
+                      COALESCE(SUM(tm.reply_count),0)::bigint AS replies,
+                      COALESCE(SUM(tm.quote_count),0)::bigint AS quotes,
+                      COALESCE(SUM(tm.bookmark_count),0)::bigint AS bookmarks,
+                      {engage_expr} AS engage_points
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.author_username IS NOT NULL
+                      AND lower(ct.author_username) ILIKE %s
+                    GROUP BY lower(ct.author_username)
+                    ORDER BY engage_points DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (f"%{username.lower()}%",),
+                )
+
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            return {
+                "platform": "X",
+                "username": row["username"],
+                "messages": int(row["engage_points"] or 0),  # фронт ожидает messages
+                # доп. поля (не мешают)
+                "engage_points": int(row["engage_points"] or 0),
+                "posts": int(row["posts"] or 0),
+                "views": int(row["views"] or 0),
+                "likes": int(row["likes"] or 0),
+                "retweets": int(row["retweets"] or 0),
+                "replies": int(row["replies"] or 0),
+                "quotes": int(row["quotes"] or 0),
+                "bookmarks": int(row["bookmarks"] or 0),
+            }
+    finally:
+        _put_conn(conn)
+
+
 # --------------------
 # TOP/STATS
 # --------------------
@@ -818,6 +1040,60 @@ def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
         _put_conn(conn)
 
 
+def get_x_top(limit: int = 15) -> List[Dict[str, Any]]:
+    """
+    Топ X по Engage Points.
+    Возвращаем `messages` = engage_points для совместимости с фронтом.
+    """
+    ensure_schema()
+    community_id = _get_x_community_id()
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            engage_expr = _x_engage_expr_sql()
+
+            if community_id:
+                cur.execute(
+                    f"""
+                    SELECT
+                      lower(ct.author_username) AS username,
+                      {engage_expr} AS engage_points
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.community_id = %s
+                      AND ct.author_username IS NOT NULL
+                    GROUP BY lower(ct.author_username)
+                    ORDER BY engage_points DESC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (community_id, limit),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT
+                      lower(ct.author_username) AS username,
+                      {engage_expr} AS engage_points
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.author_username IS NOT NULL
+                    GROUP BY lower(ct.author_username)
+                    ORDER BY engage_points DESC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+
+            rows = cur.fetchall() or []
+            return [
+                {"place": i + 1, "username": r["username"], "messages": int(r["engage_points"] or 0)}
+                for i, r in enumerate(rows)
+            ] or [{"error": "Нет данных"}]
+    finally:
+        _put_conn(conn)
+
+
 def get_discord_stats() -> Dict[str, int]:
     ensure_schema()
     conn = _get_conn()
@@ -852,10 +1128,71 @@ def get_telegram_stats() -> Dict[str, int]:
         _put_conn(conn)
 
 
+def get_x_stats() -> Dict[str, int]:
+    """
+    Размер X-комьюнити.
+    1) если есть community_members (после sync-members) -> count(*)
+    2) fallback: distinct authors в community_tweets
+    """
+    ensure_schema()
+    community_id = _get_x_community_id()
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # primary: members
+            if community_id:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_users
+                    FROM community_members
+                    WHERE community_id = %s
+                    """,
+                    (community_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS total_users
+                    FROM community_members
+                    """
+                )
+            row = cur.fetchone() or {"total_users": 0}
+            total_users = int(row["total_users"] or 0)
+
+            # fallback: distinct posters
+            if total_users == 0:
+                if community_id:
+                    cur.execute(
+                        """
+                        SELECT COUNT(DISTINCT lower(author_username)) AS total_users
+                        FROM community_tweets
+                        WHERE community_id = %s AND author_username IS NOT NULL
+                        """,
+                        (community_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT COUNT(DISTINCT lower(author_username)) AS total_users
+                        FROM community_tweets
+                        WHERE author_username IS NOT NULL
+                        """
+                    )
+                row2 = cur.fetchone() or {"total_users": 0}
+                total_users = int(row2["total_users"] or 0)
+
+            return {"total_users": total_users}
+    finally:
+        _put_conn(conn)
+
+
 def get_community_stats() -> Dict[str, int]:
     dc = get_discord_stats()
     tg = get_telegram_stats()
-    x_users = 0
+    x = get_x_stats()
+    x_users = int(x.get("total_users", 0))
+
     return {
         "discord_users": dc["total_users"],
         "telegram_users": tg["total_users"],
