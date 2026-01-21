@@ -1,7 +1,6 @@
 # app/stats.py
 import os
 import re
-import json
 import time
 import shutil
 import tempfile
@@ -12,7 +11,6 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List, Tuple
 
-import requests
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor, execute_values
 
@@ -172,9 +170,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # IMPORTANT:
-                # Если ты уже мигрировал таблицу иначе — оставь как есть.
-                # Этот CREATE не перетрёт существующую таблицу.
+                # solscan tx (сигнатура может повторяться для разных transfer строк)
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS solscan_transactions (
@@ -191,7 +187,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # Дедупликация (мягкая): signature может повторяться, поэтому не делаем PK по signature
+                # мягкая дедупликация строк transfer
                 cur.execute(
                     """
                     CREATE UNIQUE INDEX IF NOT EXISTS solscan_tx_dedupe_idx
@@ -232,19 +228,7 @@ def _to_decimal(text: Any) -> Optional[Decimal]:
         return None
 
 
-def _unix_to_iso(ts: Any) -> str:
-    try:
-        t = int(ts)
-        return datetime.fromtimestamp(t, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-    except Exception:
-        return str(ts) if ts is not None else ""
-
-
 def _age_seconds_from_solscan_time(time_text: Any) -> float:
-    """
-    Превращаем 'just now' / '1 hr ago' / '53 mins ago' в секунды.
-    Если будет ISO дата — тоже поддержим.
-    """
     if time_text is None:
         return float("inf")
     t = str(time_text).strip().lower()
@@ -260,7 +244,6 @@ def _age_seconds_from_solscan_time(time_text: Any) -> float:
     if m:
         n = int(m.group(1))
         unit = m.group(2)
-
         mult = (
             1
             if unit.startswith("sec")
@@ -278,7 +261,7 @@ def _age_seconds_from_solscan_time(time_text: Any) -> float:
         )
         return float(n * mult)
 
-    # ISO / Date string
+    # ISO / Date
     try:
         parsed = datetime.fromisoformat(str(time_text).replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
@@ -414,7 +397,7 @@ def get_latest_sanctum() -> Dict[str, Any]:
 
 
 # --------------------
-# SOLSCAN PARSER (FREE: selenium scrape)
+# SOLSCAN PARSER (FREE: selenium scrape) - FIXED (NO INDEX SHIFT)
 # --------------------
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
@@ -425,7 +408,6 @@ def _solscan_token_url() -> str:
 
 
 def _try_click_transfers_tab(driver) -> None:
-    # Варианты текста / вкладки
     xps = [
         "//button[contains(., 'Transfers')]",
         "//a[contains(., 'Transfers')]",
@@ -438,31 +420,10 @@ def _try_click_transfers_tab(driver) -> None:
         try:
             el = WebDriverWait(driver, 6).until(EC.element_to_be_clickable((By.XPATH, xp)))
             el.click()
-            time.sleep(0.3)
+            time.sleep(0.25)
             return
         except Exception:
             continue
-
-
-def _get_headers(driver) -> List[str]:
-    # table headers
-    ths = driver.find_elements(By.CSS_SELECTOR, "table thead th")
-    if ths:
-        headers = [_clean_spaces(th.text).lower() for th in ths]
-        headers = [h for h in headers if h]
-        if headers:
-            return headers
-
-    # grid headers
-    hs = driver.find_elements(By.CSS_SELECTOR, "div[role='columnheader']")
-    headers = [_clean_spaces(h.text).lower() for h in hs]
-    return [h for h in headers if h]
-
-
-def _headers_look_like_transfers(headers: List[str]) -> bool:
-    # хотим видеть from/to/amount
-    hs = " ".join(headers)
-    return ("from" in hs) and ("to" in hs) and ("amount" in hs)
 
 
 def _extract_rows(driver):
@@ -473,106 +434,146 @@ def _extract_rows(driver):
     return rows[1:] if len(rows) > 1 else []
 
 
-def _find_col(headers: List[str], keys: List[str]) -> Optional[int]:
-    for i, h in enumerate(headers):
-        for k in keys:
-            if k in h:
-                return i
-    return None
+_SOL_ADDR_RE = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 
 
-def _parse_row(row, headers: List[str]) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]]:
+def _row_signature(row) -> str:
     # signature из ссылки /tx/...
-    signature = ""
     try:
-        a = row.find_element(By.CSS_SELECTOR, "a[href^='/tx/']")
+        a = row.find_element(By.CSS_SELECTOR, "a[href*='/tx/']")
         href = a.get_attribute("href") or ""
-        signature = href.split("/tx/")[-1].split("?")[0].strip()
+        sig = href.split("/tx/")[-1].split("?")[0].strip()
+        return sig
     except Exception:
-        signature = ""
+        return ""
 
-    if not signature:
-        return None
 
-    # cells
+def _row_account_links(row) -> List[str]:
+    # Solscan обычно ведёт на /account/<addr>
+    addrs: List[str] = []
+    for css in ["a[href*='/account/']", "a[href*='/address/']"]:
+        try:
+            links = row.find_elements(By.CSS_SELECTOR, css)
+        except Exception:
+            links = []
+        for a in links:
+            href = (a.get_attribute("href") or "").strip()
+            m = re.search(r"/(account|address)/([1-9A-HJ-NP-Za-km-z]{32,44})", href)
+            if m:
+                addr = m.group(2)
+                if addr not in addrs:
+                    addrs.append(addr)
+    return addrs
+
+
+def _row_texts(row) -> List[str]:
     cells = row.find_elements(By.CSS_SELECTOR, "td")
     if not cells:
         cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
+    out = []
+    for c in cells:
+        t = _clean_spaces(c.text)
+        if t:
+            out.append(t)
+    return out
 
-    texts = [_clean_spaces(c.text) for c in cells]
-    texts = [t for t in texts if t is not None]
 
-    # indices by header
-    idx_time = _find_col(headers, ["time", "age", "block time", "date"])
-    idx_action = _find_col(headers, ["action", "type", "activity"])
-    idx_from = _find_col(headers, ["from", "sender", "source"])
-    idx_to = _find_col(headers, ["to", "receiver", "destination"])
-    idx_amount = _find_col(headers, ["amount", "qty", "quantity"])
-    idx_value = _find_col(headers, ["value", "usd", "$", "price"])
-    idx_token = _find_col(headers, ["token", "asset", "symbol"])
+def _pick_time_text(texts: List[str]) -> str:
+    for t in texts:
+        tl = t.lower()
+        if "just now" in tl or ("ago" in tl and any(u in tl for u in ["sec", "min", "hr", "hour", "day", "week", "month", "year"])):
+            return t
+    # иногда может быть ISO/дата
+    for t in texts:
+        if "202" in t or "T" in t:
+            return t
+    return ""
 
-    def pick(idx: Optional[int]) -> str:
-        if idx is None:
-            return ""
-        if idx < 0 or idx >= len(texts):
-            return ""
-        return texts[idx] or ""
 
-    time_txt = pick(idx_time)
-    action_txt = pick(idx_action) or "TRANSFER"
-    from_txt = pick(idx_from)
-    to_txt = pick(idx_to)
+def _pick_action(texts: List[str]) -> str:
+    for t in texts:
+        if t.strip().upper() in {"TRANSFER", "SWAP", "MINT", "BURN"}:
+            return t.strip().upper()
+    # часто action просто "TRANSFER" в UI — если не нашли, дефолт
+    return "TRANSFER"
 
-    amount_txt = pick(idx_amount)
-    value_txt = pick(idx_value)
 
-    # fallback heuristics если headers не совпали идеально
-    if not time_txt:
+def _pick_value_usd(texts: List[str]) -> Optional[Decimal]:
+    for t in texts:
+        if "$" in t:
+            d = _to_decimal(t)
+            if d is not None:
+                return d
+    return None
+
+
+def _pick_amount(texts: List[str]) -> Optional[Decimal]:
+    # amount обычно НЕ содержит $, и часто содержит токен
+    candidates: List[Decimal] = []
+    for t in texts:
+        if "$" in t:
+            continue
+        d = _to_decimal(t)
+        if d is not None:
+            candidates.append(d)
+    if not candidates:
+        return None
+    # обычно amount меньше чем value и часто имеет много знаков — берём первое "разумное"
+    return candidates[0]
+
+
+def _parse_transfer_row(row) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]]:
+    sig = _row_signature(row)
+    if not sig:
+        return None
+
+    texts = _row_texts(row)
+    t_time = _pick_time_text(texts)
+    action = _pick_action(texts)
+
+    addrs = _row_account_links(row)
+    from_addr = addrs[0] if len(addrs) > 0 else ""
+    to_addr = addrs[1] if len(addrs) > 1 else ""
+
+    # fallback если Solscan урезал и нет ссылок
+    if not from_addr or not to_addr:
+        # попробуем вытащить base58 из текста (если вдруг полные)
+        found = []
         for t in texts:
-            if "ago" in t.lower() or "just now" in t.lower():
-                time_txt = t
-                break
+            for m in _SOL_ADDR_RE.findall(t):
+                if m not in found:
+                    found.append(m)
+        if not from_addr and len(found) > 0:
+            from_addr = found[0]
+        if not to_addr and len(found) > 1:
+            to_addr = found[1]
 
-    amount = _to_decimal(amount_txt)
-    value = _to_decimal(value_txt)
+    amount = _pick_amount(texts)
+    value = _pick_value_usd(texts)
 
-    token_txt = pick(idx_token) or SOLSCAN_TOKEN_SYMBOL
-
-    return (signature, time_txt, action_txt, from_txt, to_txt, amount, value, token_txt)
+    token = SOLSCAN_TOKEN_SYMBOL
+    return (sig, t_time, action, from_addr, to_addr, amount, value, token)
 
 
 def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     """
-    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium).
+    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium)
     """
     ensure_schema()
 
     driver, tmp_dir = _make_driver()
     try:
         driver.get(_solscan_token_url())
-
-        # кликаем Transfers
         _try_click_transfers_tab(driver)
 
-        # ждём, пока точно появится таблица с нужными заголовками
         wait = WebDriverWait(driver, 30)
+        wait.until(lambda d: len(_extract_rows(d)) > 0)
 
-        def _ready(d):
-            headers = _get_headers(d)
-            if not headers:
-                return False
-            if not _headers_look_like_transfers(headers):
-                return False
-            return len(_extract_rows(d)) > 0
-
-        wait.until(_ready)
-
-        headers = _get_headers(driver)
         rows = _extract_rows(driver)[: max(1, int(limit_rows))]
 
         parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
         for r in rows:
-            item = _parse_row(r, headers)
+            item = _parse_transfer_row(r)
             if item:
                 parsed.append(item)
 
@@ -583,9 +584,9 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if not parsed:
-        return {"inserted_or_updated": 0, "note": "No rows parsed (maybe Solscan layout changed)."}
+        return {"inserted_or_updated": 0, "note": "No rows parsed."}
 
-    # дедуп внутри батча по тем же полям, что и unique index
+    # дедуп по твоему unique индексу
     uniq: Dict[Tuple[Any, ...], Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = {}
     for row in parsed:
         key = (row[0], row[3], row[4], row[5], row[2], row[1])  # signature, from, to, amount, action, time
@@ -593,10 +594,7 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             uniq[key] = row
     parsed = list(uniq.values())
 
-    # Solscan обычно показывает newest -> oldest, а нам удобнее вставить oldest->newest
-    # чтобы "последние вставленные" выглядели логично.
-    parsed = list(reversed(parsed))
-
+    # как на Solscan: newest сверху -> мы вставим в БД так же
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -618,10 +616,6 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
 
 
 def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
-    """
-    Возвращает последние транзакции из таблицы solscan_transactions
-    (и сортирует по времени: just now -> ... -> older).
-    """
     ensure_schema()
     limit = max(1, int(limit))
     conn = _get_conn()
@@ -641,13 +635,12 @@ def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
     finally:
         _put_conn(conn)
 
-    # сортировка: чем меньше age_seconds, тем новее
     rows.sort(key=lambda r: _age_seconds_from_solscan_time(r.get("time")))
     return rows[:limit]
 
 
 # --------------------
-# BOT WRITE FUNCTIONS
+# COMMUNITY / STATS
 # --------------------
 def add_discord_message(user_id: int, username: str) -> None:
     def _add():
@@ -704,9 +697,6 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
     _submit_background(_add)
 
 
-# --------------------
-# USER LOOKUP
-# --------------------
 def get_tg_user(username: str) -> Optional[Dict[str, Any]]:
     ensure_schema()
     conn = _get_conn()
@@ -749,9 +739,6 @@ def get_dc_user(username: str) -> Optional[Dict[str, Any]]:
         _put_conn(conn)
 
 
-# --------------------
-# TOP/STATS
-# --------------------
 def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
     ensure_schema()
     conn = _get_conn()
@@ -767,10 +754,7 @@ def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
                 (limit,),
             )
             rows = cur.fetchall()
-            return [
-                {"place": i + 1, "username": r["username"], "messages": r["message_count"]}
-                for i, r in enumerate(rows)
-            ] or [{"error": "Нет данных"}]
+            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
@@ -790,10 +774,7 @@ def get_telegram_top(limit: int = 15) -> List[Dict[str, Any]]:
                 (limit,),
             )
             rows = cur.fetchall()
-            return [
-                {"place": i + 1, "username": r["username"], "messages": r["message_count"]}
-                for i, r in enumerate(rows)
-            ] or [{"error": "Нет данных"}]
+            return [{"place": i + 1, "username": r["username"], "messages": r["message_count"]} for i, r in enumerate(rows)] or [{"error": "Нет данных"}]
     finally:
         _put_conn(conn)
 
