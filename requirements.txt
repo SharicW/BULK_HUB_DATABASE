@@ -60,6 +60,9 @@ websockets==15.0.1
 xyzservices==2025.11.0
 yarl==1.22.0
 selenium==4.39.0
+asyncpg==0.29.0
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
 
 
 
