@@ -4,22 +4,24 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
+import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field
 
 from app.auth_db import get_pool
 
 router = APIRouter(prefix="", tags=["auth"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer = HTTPBearer(auto_error=False)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_PLEASE")
 JWT_ALG = os.getenv("JWT_ALG", "HS256")
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+
+# bcrypt ограничивает пароль 72 байтами (UTF-8 байты, не символы)
+MAX_BCRYPT_BYTES = 72
 
 
 # --------- models ---------
@@ -50,12 +52,37 @@ class MarkerOut(MarkerIn):
 
 
 # --------- helpers ---------
+def _pwd_bytes(password: str) -> bytes:
+    b = password.encode("utf-8")
+    if len(b) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password cannot be empty.",
+        )
+    if len(b) > MAX_BCRYPT_BYTES:
+        # bcrypt будет фактически "резать" пароль — лучше явно запретить
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password too long (max 72 bytes). Use a shorter password.",
+        )
+    return b
+
+
 def _hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    pw = _pwd_bytes(password)
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(pw, salt).decode("utf-8")
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    try:
+        pw = _pwd_bytes(password)
+    except HTTPException:
+        return False
+    try:
+        return bcrypt.checkpw(pw, password_hash.encode("utf-8"))
+    except Exception:
+        return False
 
 
 def _create_token(user_id: UUID, email: str) -> str:
