@@ -171,10 +171,15 @@ def ensure_schema() -> None:
                     """
                 )
 
+                # IMPORTANT:
+                # Таблица для транзакций Solscan:
+                # - id BIGSERIAL чтобы сортировать по "последним вставленным"
+                # - signature НЕ PK, т.к. Solscan может показывать несколько строк на одну signature
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS solscan_transactions (
-                        signature     TEXT PRIMARY KEY,
+                        id            BIGSERIAL PRIMARY KEY,
+                        signature     TEXT,
                         time          TEXT,
                         action        TEXT,
                         from_address  TEXT,
@@ -183,6 +188,22 @@ def ensure_schema() -> None:
                         value         NUMERIC,
                         token         TEXT
                     );
+                    """
+                )
+
+                # Уникальность по набору полей (чтобы не плодить одинаковые строки)
+                cur.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS solscan_transactions_unique_row_idx
+                    ON solscan_transactions (signature, from_address, to_address, amount, action, time);
+                    """
+                )
+
+                # Индекс для быстрых выборок "последние"
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS solscan_transactions_id_desc_idx
+                    ON solscan_transactions (id DESC);
                     """
                 )
 
@@ -245,7 +266,7 @@ def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]
 
 
 # --------------------
-# SELENIUM (ТОЛЬКО ДЛЯ SANCTUM)
+# SELENIUM (ТОЛЬКО ДЛЯ SANCTUM / SOLSCAN)
 # --------------------
 def _make_driver() -> Tuple[webdriver.Chrome, str]:
     chrome_bin = (
@@ -373,11 +394,16 @@ def get_latest_sanctum() -> Dict[str, Any]:
 # --------------------
 # SOLSCAN PARSER (FREE: selenium scrape, no API key)
 # --------------------
-SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
+SOLSCAN_TOKEN_MINT = os.getenv(
+    "SOLSCAN_TOKEN_MINT",
+    "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn"
+)
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
+
 
 def _solscan_token_url() -> str:
     return f"https://solscan.io/token/{SOLSCAN_TOKEN_MINT}"
+
 
 def _try_click_transfers_tab(driver) -> None:
     xps = [
@@ -393,6 +419,7 @@ def _try_click_transfers_tab(driver) -> None:
         except Exception:
             continue
 
+
 def _extract_rows(driver):
     trs = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     if trs:
@@ -400,8 +427,8 @@ def _extract_rows(driver):
     rows = driver.find_elements(By.CSS_SELECTOR, "div[role='row']")
     return rows[1:] if len(rows) > 1 else []
 
+
 def _parse_row(row):
-    # signature из ссылки /tx/...
     signature = ""
     try:
         a = row.find_element(By.CSS_SELECTOR, "a[href^='/tx/']")
@@ -413,7 +440,6 @@ def _parse_row(row):
     if not signature:
         return None
 
-    # ячейки (td или role=cell)
     cells = row.find_elements(By.CSS_SELECTOR, "td")
     if not cells:
         cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
@@ -421,8 +447,6 @@ def _parse_row(row):
     texts = [_clean_spaces(c.text) for c in cells]
 
     # ожидаем: Signature | Time | Action | From | To | Amount | Value | Token
-    # но Signature мы уже получили из href, поэтому читаем начиная с Time
-    # иногда таблица может быть короче — страхуемся
     time_txt   = texts[1] if len(texts) > 1 else ""
     action_txt = texts[2] if len(texts) > 2 else "TRANSFER"
     from_txt   = texts[3] if len(texts) > 3 else ""
@@ -436,6 +460,7 @@ def _parse_row(row):
     value  = _to_decimal(value_txt)
 
     return (signature, time_txt, action_txt, from_txt, to_txt, amount, value, token_txt)
+
 
 def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     """
@@ -452,7 +477,8 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         wait.until(lambda d: len(_extract_rows(d)) > 0)
 
         rows = _extract_rows(driver)[: max(1, int(limit_rows))]
-        parsed = []
+        parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
+
         for r in rows:
             item = _parse_row(r)
             if item:
@@ -467,17 +493,20 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     if not parsed:
         return {"inserted_or_updated": 0, "note": "No rows parsed."}
 
-    # ВАЖНО: у тебя PK = signature, поэтому дубль сигнатур в одном batch ломает UPSERT
-    # (Solscan Transfers может иметь несколько строк с одной signature)
-    uniq = {}
+    # Дедуп по "уникальному ключу" (как в БД)
+    uniq: Dict[Tuple[Any, ...], Tuple[Any, ...]] = {}
     for row in parsed:
-        sig = row[0]
-        if sig and sig not in uniq:
-            uniq[sig] = row
+        key = (row[0], row[3], row[4], row[5], row[2], row[1])  # signature, from, to, amount, action, time
+        if key not in uniq:
+            uniq[key] = row
     parsed = list(uniq.values())
 
     if not parsed:
-        return {"inserted_or_updated": 0, "note": "All parsed rows were duplicates by signature."}
+        return {"inserted_or_updated": 0, "note": "All parsed rows were duplicates by unique key."}
+
+    # ВАЖНО: вставляем в БД в обратном порядке (старые -> новые),
+    # чтобы id у самых новых оказался самым большим.
+    parsed = list(reversed(parsed))
 
     conn = _get_conn()
     try:
@@ -486,14 +515,7 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             INSERT INTO solscan_transactions
               (signature, time, action, from_address, to_address, amount, value, token)
             VALUES %s
-            ON CONFLICT (signature) DO UPDATE SET
-              time         = EXCLUDED.time,
-              action       = EXCLUDED.action,
-              from_address = EXCLUDED.from_address,
-              to_address   = EXCLUDED.to_address,
-              amount       = EXCLUDED.amount,
-              value        = EXCLUDED.value,
-              token        = EXCLUDED.token
+            ON CONFLICT DO NOTHING
             """
             execute_values(cur, sql, parsed, page_size=100)
         conn.commit()
@@ -504,6 +526,30 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
         _put_conn(conn)
 
     return {"inserted_or_updated": len(parsed)}
+
+
+def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Возвращает последние транзакции из таблицы solscan_transactions
+    в правильном порядке (новые сверху).
+    """
+    ensure_schema()
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, signature, time, action, from_address, to_address, amount, value, token
+                FROM solscan_transactions
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        _put_conn(conn)
+
 
 # --------------------
 # BOT WRITE FUNCTIONS
@@ -701,29 +747,3 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
-
-
-def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
-    """
-    Возвращает последние транзакции из таблицы solscan_transactions.
-    """
-    ensure_schema()
-    conn = _get_conn()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT signature, time, action, from_address, to_address, amount, value, token
-                FROM solscan_transactions
-                ORDER BY time DESC NULLS LAST
-                LIMIT %s
-                """,
-                (limit,),
-            )
-            return cur.fetchall()
-    finally:
-        _put_conn(conn)
-
-
-
-
