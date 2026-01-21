@@ -13,6 +13,9 @@ from app.stats import (
     get_tg_user,
     get_dc_user,
     get_community_stats,
+    # X
+    get_x_top,
+    get_x_user,
     # sanctum
     parse_sanctum,
     get_latest_sanctum,
@@ -46,10 +49,12 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {
-        "status": "🚀 BULK API OK",
+        "status": " BULK API OK",
         "community": "/community/stats",
         "discord_top": "/discord/top/15",
         "telegram_top": "/telegram/top/15",
+        "x_top": "/x/top/15",
+        "x_user": "/x/<username>",
         "sanctum_latest": "/sanctum/latest",
         "sanctum_refresh": "/sanctum/refresh",
         "solscan_latest": "/solscan/latest?limit=25",
@@ -73,16 +78,27 @@ async def telegram_top(limit: int = 15):
     return await run_in_threadpool(get_telegram_top, limit)
 
 
+@app.get("/x/top/{limit}")
+async def x_top(limit: int = 15):
+    return await run_in_threadpool(get_x_top, limit)
+
+
+@app.get("/x/{username}")
+async def x_user(username: str):
+    result = await run_in_threadpool(get_x_user, username)
+    return result or {"error": f" X {username} не найден"}
+
+
 @app.get("/tg/{username}")
 async def tg_user(username: str):
     result = await run_in_threadpool(get_tg_user, username)
-    return result or {"error": f"👤 TG {username} не найден"}
+    return result or {"error": f" TG {username} не найден"}
 
 
 @app.get("/dc/{username}")
 async def dc_user(username: str):
     result = await run_in_threadpool(get_dc_user, username)
-    return result or {"error": f"👤 DC {username} не найден"}
+    return result or {"error": f" DC {username} не найден"}
 
 
 # -------- SANCTUM --------
