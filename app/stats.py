@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import time
 import shutil
 import tempfile
 import logging
@@ -172,13 +173,12 @@ def ensure_schema() -> None:
                 )
 
                 # IMPORTANT:
-                # Таблица для транзакций Solscan:
-                # - id BIGSERIAL чтобы сортировать по "последним вставленным"
-                # - signature НЕ PK, т.к. Solscan может показывать несколько строк на одну signature
+                # Если ты уже мигрировал таблицу иначе — оставь как есть.
+                # Этот CREATE не перетрёт существующую таблицу.
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS solscan_transactions (
-                        id            BIGSERIAL PRIMARY KEY,
+                        id BIGSERIAL PRIMARY KEY,
                         signature     TEXT,
                         time          TEXT,
                         action        TEXT,
@@ -191,19 +191,11 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # Уникальность по набору полей (чтобы не плодить одинаковые строки)
+                # Дедупликация (мягкая): signature может повторяться, поэтому не делаем PK по signature
                 cur.execute(
                     """
-                    CREATE UNIQUE INDEX IF NOT EXISTS solscan_transactions_unique_row_idx
+                    CREATE UNIQUE INDEX IF NOT EXISTS solscan_tx_dedupe_idx
                     ON solscan_transactions (signature, from_address, to_address, amount, action, time);
-                    """
-                )
-
-                # Индекс для быстрых выборок "последние"
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS solscan_transactions_id_desc_idx
-                    ON solscan_transactions (id DESC);
                     """
                 )
 
@@ -248,25 +240,55 @@ def _unix_to_iso(ts: Any) -> str:
         return str(ts) if ts is not None else ""
 
 
-def _normalize_amount(raw_amount: Any, token_decimals: Any) -> Optional[Decimal]:
-    amt = _to_decimal(raw_amount)
-    if amt is None:
-        return None
-    try:
-        dec = int(token_decimals) if token_decimals is not None else None
-    except Exception:
-        dec = None
+def _age_seconds_from_solscan_time(time_text: Any) -> float:
+    """
+    Превращаем 'just now' / '1 hr ago' / '53 mins ago' в секунды.
+    Если будет ISO дата — тоже поддержим.
+    """
+    if time_text is None:
+        return float("inf")
+    t = str(time_text).strip().lower()
+    if not t:
+        return float("inf")
+    if "just now" in t:
+        return 0.0
 
-    if dec is not None:
-        try:
-            return amt / (Decimal(10) ** Decimal(dec))
-        except Exception:
-            return amt
-    return amt
+    m = re.search(
+        r"(\d+)\s*(sec|secs|second|seconds|min|mins|minute|minutes|hr|hrs|hour|hours|day|days|week|weeks|month|months|year|years)\s*ago",
+        t,
+    )
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+
+        mult = (
+            1
+            if unit.startswith("sec")
+            else 60
+            if unit.startswith("min")
+            else 3600
+            if unit.startswith("hr")
+            else 86400
+            if unit.startswith("day")
+            else 604800
+            if unit.startswith("week")
+            else 2592000
+            if unit.startswith("month")
+            else 31536000
+        )
+        return float(n * mult)
+
+    # ISO / Date string
+    try:
+        parsed = datetime.fromisoformat(str(time_text).replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return max(0.0, (now - parsed).total_seconds())
+    except Exception:
+        return float("inf")
 
 
 # --------------------
-# SELENIUM (ТОЛЬКО ДЛЯ SANCTUM / SOLSCAN)
+# SELENIUM (SANCTUM + SOLSCAN)
 # --------------------
 def _make_driver() -> Tuple[webdriver.Chrome, str]:
     chrome_bin = (
@@ -309,7 +331,7 @@ def _make_driver() -> Tuple[webdriver.Chrome, str]:
 
 
 # --------------------
-# SANCTUM PARSER (selenium)
+# SANCTUM PARSER
 # --------------------
 SANCTUM_URL = "https://app.sanctum.so/explore/BulkSOL"
 
@@ -392,12 +414,9 @@ def get_latest_sanctum() -> Dict[str, Any]:
 
 
 # --------------------
-# SOLSCAN PARSER (FREE: selenium scrape, no API key)
+# SOLSCAN PARSER (FREE: selenium scrape)
 # --------------------
-SOLSCAN_TOKEN_MINT = os.getenv(
-    "SOLSCAN_TOKEN_MINT",
-    "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn"
-)
+SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
 
 
@@ -406,18 +425,44 @@ def _solscan_token_url() -> str:
 
 
 def _try_click_transfers_tab(driver) -> None:
+    # Варианты текста / вкладки
     xps = [
         "//button[contains(., 'Transfers')]",
         "//a[contains(., 'Transfers')]",
         "//*[contains(@role,'tab') and contains(., 'Transfers')]",
+        "//button[contains(., 'Transfer')]",
+        "//a[contains(., 'Transfer')]",
+        "//*[contains(@role,'tab') and contains(., 'Transfer')]",
     ]
     for xp in xps:
         try:
             el = WebDriverWait(driver, 6).until(EC.element_to_be_clickable((By.XPATH, xp)))
             el.click()
+            time.sleep(0.3)
             return
         except Exception:
             continue
+
+
+def _get_headers(driver) -> List[str]:
+    # table headers
+    ths = driver.find_elements(By.CSS_SELECTOR, "table thead th")
+    if ths:
+        headers = [_clean_spaces(th.text).lower() for th in ths]
+        headers = [h for h in headers if h]
+        if headers:
+            return headers
+
+    # grid headers
+    hs = driver.find_elements(By.CSS_SELECTOR, "div[role='columnheader']")
+    headers = [_clean_spaces(h.text).lower() for h in hs]
+    return [h for h in headers if h]
+
+
+def _headers_look_like_transfers(headers: List[str]) -> bool:
+    # хотим видеть from/to/amount
+    hs = " ".join(headers)
+    return ("from" in hs) and ("to" in hs) and ("amount" in hs)
 
 
 def _extract_rows(driver):
@@ -428,59 +473,106 @@ def _extract_rows(driver):
     return rows[1:] if len(rows) > 1 else []
 
 
-def _parse_row(row):
+def _find_col(headers: List[str], keys: List[str]) -> Optional[int]:
+    for i, h in enumerate(headers):
+        for k in keys:
+            if k in h:
+                return i
+    return None
+
+
+def _parse_row(row, headers: List[str]) -> Optional[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]]:
+    # signature из ссылки /tx/...
     signature = ""
     try:
         a = row.find_element(By.CSS_SELECTOR, "a[href^='/tx/']")
         href = a.get_attribute("href") or ""
         signature = href.split("/tx/")[-1].split("?")[0].strip()
     except Exception:
-        return None
+        signature = ""
 
     if not signature:
         return None
 
+    # cells
     cells = row.find_elements(By.CSS_SELECTOR, "td")
     if not cells:
         cells = row.find_elements(By.CSS_SELECTOR, "div[role='cell']")
 
     texts = [_clean_spaces(c.text) for c in cells]
+    texts = [t for t in texts if t is not None]
 
-    # ожидаем: Signature | Time | Action | From | To | Amount | Value | Token
-    time_txt   = texts[1] if len(texts) > 1 else ""
-    action_txt = texts[2] if len(texts) > 2 else "TRANSFER"
-    from_txt   = texts[3] if len(texts) > 3 else ""
-    to_txt     = texts[4] if len(texts) > 4 else ""
+    # indices by header
+    idx_time = _find_col(headers, ["time", "age", "block time", "date"])
+    idx_action = _find_col(headers, ["action", "type", "activity"])
+    idx_from = _find_col(headers, ["from", "sender", "source"])
+    idx_to = _find_col(headers, ["to", "receiver", "destination"])
+    idx_amount = _find_col(headers, ["amount", "qty", "quantity"])
+    idx_value = _find_col(headers, ["value", "usd", "$", "price"])
+    idx_token = _find_col(headers, ["token", "asset", "symbol"])
 
-    amount_txt = texts[5] if len(texts) > 5 else ""
-    value_txt  = texts[6] if len(texts) > 6 else ""
-    token_txt  = texts[7] if len(texts) > 7 else SOLSCAN_TOKEN_SYMBOL
+    def pick(idx: Optional[int]) -> str:
+        if idx is None:
+            return ""
+        if idx < 0 or idx >= len(texts):
+            return ""
+        return texts[idx] or ""
+
+    time_txt = pick(idx_time)
+    action_txt = pick(idx_action) or "TRANSFER"
+    from_txt = pick(idx_from)
+    to_txt = pick(idx_to)
+
+    amount_txt = pick(idx_amount)
+    value_txt = pick(idx_value)
+
+    # fallback heuristics если headers не совпали идеально
+    if not time_txt:
+        for t in texts:
+            if "ago" in t.lower() or "just now" in t.lower():
+                time_txt = t
+                break
 
     amount = _to_decimal(amount_txt)
-    value  = _to_decimal(value_txt)
+    value = _to_decimal(value_txt)
+
+    token_txt = pick(idx_token) or SOLSCAN_TOKEN_SYMBOL
 
     return (signature, time_txt, action_txt, from_txt, to_txt, amount, value, token_txt)
 
 
 def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
     """
-    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium)
+    FREE: забираем последние transfer'ы токена со страницы Solscan (через Selenium).
     """
     ensure_schema()
 
     driver, tmp_dir = _make_driver()
     try:
         driver.get(_solscan_token_url())
+
+        # кликаем Transfers
         _try_click_transfers_tab(driver)
 
+        # ждём, пока точно появится таблица с нужными заголовками
         wait = WebDriverWait(driver, 30)
-        wait.until(lambda d: len(_extract_rows(d)) > 0)
 
+        def _ready(d):
+            headers = _get_headers(d)
+            if not headers:
+                return False
+            if not _headers_look_like_transfers(headers):
+                return False
+            return len(_extract_rows(d)) > 0
+
+        wait.until(_ready)
+
+        headers = _get_headers(driver)
         rows = _extract_rows(driver)[: max(1, int(limit_rows))]
-        parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
 
+        parsed: List[Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = []
         for r in rows:
-            item = _parse_row(r)
+            item = _parse_row(r, headers)
             if item:
                 parsed.append(item)
 
@@ -491,21 +583,18 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if not parsed:
-        return {"inserted_or_updated": 0, "note": "No rows parsed."}
+        return {"inserted_or_updated": 0, "note": "No rows parsed (maybe Solscan layout changed)."}
 
-    # Дедуп по "уникальному ключу" (как в БД)
-    uniq: Dict[Tuple[Any, ...], Tuple[Any, ...]] = {}
+    # дедуп внутри батча по тем же полям, что и unique index
+    uniq: Dict[Tuple[Any, ...], Tuple[str, str, str, str, str, Optional[Decimal], Optional[Decimal], str]] = {}
     for row in parsed:
         key = (row[0], row[3], row[4], row[5], row[2], row[1])  # signature, from, to, amount, action, time
         if key not in uniq:
             uniq[key] = row
     parsed = list(uniq.values())
 
-    if not parsed:
-        return {"inserted_or_updated": 0, "note": "All parsed rows were duplicates by unique key."}
-
-    # ВАЖНО: вставляем в БД в обратном порядке (старые -> новые),
-    # чтобы id у самых новых оказался самым большим.
+    # Solscan обычно показывает newest -> oldest, а нам удобнее вставить oldest->newest
+    # чтобы "последние вставленные" выглядели логично.
     parsed = list(reversed(parsed))
 
     conn = _get_conn()
@@ -531,12 +620,14 @@ def parse_solscan(limit_rows: int = 10) -> Dict[str, Any]:
 def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
     """
     Возвращает последние транзакции из таблицы solscan_transactions
-    в правильном порядке (новые сверху).
+    (и сортирует по времени: just now -> ... -> older).
     """
     ensure_schema()
+    limit = max(1, int(limit))
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # берём запасом, потом отсортируем по "ago"
             cur.execute(
                 """
                 SELECT id, signature, time, action, from_address, to_address, amount, value, token
@@ -544,11 +635,15 @@ def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
                 ORDER BY id DESC
                 LIMIT %s
                 """,
-                (limit,),
+                (max(50, limit * 5),),
             )
-            return cur.fetchall()
+            rows = cur.fetchall() or []
     finally:
         _put_conn(conn)
+
+    # сортировка: чем меньше age_seconds, тем новее
+    rows.sort(key=lambda r: _age_seconds_from_solscan_time(r.get("time")))
+    return rows[:limit]
 
 
 # --------------------
