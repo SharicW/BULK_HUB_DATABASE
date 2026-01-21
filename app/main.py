@@ -4,6 +4,9 @@ from fastapi import FastAPI, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth_db import init_auth_pool, close_auth_pool
+from app.auth_routes import router as auth_router
+
 from app.stats import (
     close_pool,
     shutdown_workers,
@@ -27,9 +30,14 @@ from app.stats import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    shutdown_workers()
-    close_pool()
+    # init auth/frontend DB pool
+    await init_auth_pool()
+    try:
+        yield
+    finally:
+        shutdown_workers()
+        close_pool()
+        await close_auth_pool()
 
 
 app = FastAPI(title="BULK Stats API", lifespan=lifespan)
@@ -40,16 +48,25 @@ app.add_middleware(
         "https://bulkhub-production.up.railway.app",
         "http://localhost:5173",
         "http://localhost:3000",
+        # добавь сюда домен твоего фронта (railway/vercel/etc) если другой
     ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# подключаем новые роуты (auth + markers)
+app.include_router(auth_router)
 
 
 @app.get("/")
 def root():
     return {
         "status": " BULK API OK",
+        "auth_login": "/auth/login",
+        "auth_me": "/auth/me",
+        "markers_save": "POST /markers",
+        "markers_me": "/markers/me",
+        "markers_list": "/markers?limit=500",
         "community": "/community/stats",
         "discord_top": "/discord/top/15",
         "telegram_top": "/telegram/top/15",
@@ -109,7 +126,6 @@ async def sanctum_latest():
 
 @app.post("/sanctum/refresh")
 async def sanctum_refresh():
-    # запускаешь вручную или по cron
     return await run_in_threadpool(parse_sanctum)
 
 
