@@ -85,6 +85,15 @@ def root():
 async def community_stats():
     return await run_in_threadpool(get_community_stats)
 
+from fastapi import Query
+
+@app.get("/x/posts")
+async def x_posts(
+    username: str = Query(..., min_length=1),
+    limit: int = Query(30, ge=1, le=60),
+    offset: int = Query(0, ge=0),
+):
+    return await run_in_threadpool(get_x_posts, username, limit, offset)
 
 @app.get("/discord/top/{limit}")
 async def discord_top(limit: int = 15):
@@ -139,4 +148,5 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
