@@ -1186,10 +1186,61 @@ def get_x_stats() -> Dict[str, int]:
     finally:
         _put_conn(conn)
 
+def _extract_x_media_urls(raw: Any) -> List[str]:
+    """
+    Best-effort вытаскиваем картинки из raw_json твита.
+    Возвращает уникальные URL'ы картинок.
+    """
+    if raw is None:
+        return []
+
+    # psycopg2 может вернуть dict, а может строку
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+
+    urls: List[str] = []
+    seen = set()
+
+    def add(url: Any):
+        if not url:
+            return
+        u = str(url).strip()
+        if not u.startswith("http"):
+            return
+        # pbs.twimg.com/media обычно картинки
+        if ("pbs.twimg.com/media" in u) or any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+            if u not in seen:
+                seen.add(u)
+                urls.append(u)
+
+    def walk(x: Any):
+        if x is None:
+            return
+        if isinstance(x, dict):
+            add(x.get("media_url_https"))
+            add(x.get("media_url"))
+            add(x.get("url"))
+            add(x.get("preview_image_url"))
+
+            # общий обход
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for i in x:
+                walk(i)
+
+    walk(raw)
+    return urls
+
+
 def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
     """
     Возвращает посты из community_tweets по author_username (в рамках COMMUNITY_ID если задан).
     Пагинация: limit/offset.
+    + возвращает media: [url, url, ...]
     """
     ensure_schema()
     community_id = _get_x_community_id()
@@ -1198,7 +1249,7 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
     u = (username or "").strip()
     if u.startswith("@"):
         u = u[1:]
-    u = u.lower()
+    u = u.lower().strip()
 
     if not u:
         return []
@@ -1216,6 +1267,8 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                       ct.created_at,
                       ct.url,
                       ct.text,
+                      ct.media_urls,
+                      ct.raw_json,
                       COALESCE(tm.view_count, 0)      AS views,
                       COALESCE(tm.like_count, 0)      AS likes,
                       COALESCE(tm.retweet_count, 0)   AS retweets,
@@ -1243,6 +1296,8 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                       ct.created_at,
                       ct.url,
                       ct.text,
+                      ct.media_urls,
+                      ct.raw_json,
                       COALESCE(tm.view_count, 0)      AS views,
                       COALESCE(tm.like_count, 0)      AS likes,
                       COALESCE(tm.retweet_count, 0)   AS retweets,
@@ -1269,6 +1324,35 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                 if not url and tid:
                     url = f"https://x.com/i/web/status/{tid}"
 
+                # media_urls может прийти как list/dict/str/null
+                media = r.get("media_urls")
+
+                if isinstance(media, str):
+                    try:
+                        media = json.loads(media)
+                    except Exception:
+                        media = []
+
+                if not isinstance(media, list):
+                    media = []
+
+                # fallback: если media_urls пустой — попробуем достать из raw_json
+                if not media:
+                    media = _extract_x_media_urls(r.get("raw_json"))
+
+                # финальная чистка
+                clean_media: List[str] = []
+                seen = set()
+                for m in media:
+                    if not m:
+                        continue
+                    s = str(m).strip()
+                    if not s.startswith("http"):
+                        continue
+                    if s not in seen:
+                        seen.add(s)
+                        clean_media.append(s)
+
                 out.append(
                     {
                         "tweet_id": tid,
@@ -1277,6 +1361,7 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                         "created_at": (r.get("created_at").isoformat() if r.get("created_at") else None),
                         "url": url,
                         "text": r.get("text") or "",
+                        "media": clean_media,  # ✅ ВОТ ТУТ КАРТИНКИ
                         "views": int(r.get("views") or 0),
                         "likes": int(r.get("likes") or 0),
                         "retweets": int(r.get("retweets") or 0),
@@ -1303,4 +1388,5 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
