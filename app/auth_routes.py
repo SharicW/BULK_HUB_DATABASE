@@ -30,6 +30,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=1, max_length=200)
+
+
 class UserOut(BaseModel):
     id: str
     email: EmailStr
@@ -156,6 +161,36 @@ async def auth_login(body: LoginRequest):
 @router.get("/auth/me", response_model=UserOut)
 async def auth_me(user: UserOut = Depends(get_current_user)):
     return user
+
+@router.post("/auth/change-password")
+async def auth_change_password(body: ChangePasswordRequest, user: UserOut = Depends(get_current_user)):
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT password_hash FROM users WHERE id=$1",
+            UUID(user.id),
+        )
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        if not _verify_password(body.current_password, row["password_hash"]):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Wrong password")
+
+        new_hash = _hash_password(body.new_password)
+        await conn.execute(
+            "UPDATE users SET password_hash=$1 WHERE id=$2",
+            new_hash,
+            UUID(user.id),
+        )
+
+    return {"ok": True}
+
+
+@router.post("/auth/logout")
+async def auth_logout(user: UserOut = Depends(get_current_user)):
+    # JWT stateless logout: фронт удаляет токен. Эндпоинт оставлен для совместимости.
+    return {"ok": True}
+
 
 
 @router.post("/markers", response_model=MarkerOut)
