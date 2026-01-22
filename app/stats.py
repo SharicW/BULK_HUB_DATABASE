@@ -1186,6 +1186,110 @@ def get_x_stats() -> Dict[str, int]:
     finally:
         _put_conn(conn)
 
+def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[str, Any]]:
+    """
+    Возвращает посты из community_tweets по author_username (в рамках COMMUNITY_ID если задан).
+    Пагинация: limit/offset.
+    """
+    ensure_schema()
+    community_id = _get_x_community_id()
+
+    # нормализуем ввод: "@name" -> "name"
+    u = (username or "").strip()
+    if u.startswith("@"):
+        u = u[1:]
+    u = u.lower()
+
+    if not u:
+        return []
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if community_id:
+                cur.execute(
+                    """
+                    SELECT
+                      ct.tweet_id,
+                      ct.author_username,
+                      ct.author_name,
+                      ct.created_at,
+                      ct.url,
+                      ct.text,
+                      COALESCE(tm.view_count, 0)      AS views,
+                      COALESCE(tm.like_count, 0)      AS likes,
+                      COALESCE(tm.retweet_count, 0)   AS retweets,
+                      COALESCE(tm.reply_count, 0)     AS replies,
+                      COALESCE(tm.quote_count, 0)     AS quotes,
+                      COALESCE(tm.bookmark_count, 0)  AS bookmarks
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm
+                      ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.community_id = %s
+                      AND ct.author_username IS NOT NULL
+                      AND lower(ct.author_username) = %s
+                    ORDER BY ct.created_at DESC NULLS LAST, ct.inserted_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (community_id, u, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      ct.tweet_id,
+                      ct.author_username,
+                      ct.author_name,
+                      ct.created_at,
+                      ct.url,
+                      ct.text,
+                      COALESCE(tm.view_count, 0)      AS views,
+                      COALESCE(tm.like_count, 0)      AS likes,
+                      COALESCE(tm.retweet_count, 0)   AS retweets,
+                      COALESCE(tm.reply_count, 0)     AS replies,
+                      COALESCE(tm.quote_count, 0)     AS quotes,
+                      COALESCE(tm.bookmark_count, 0)  AS bookmarks
+                    FROM community_tweets ct
+                    LEFT JOIN tweet_metrics_latest tm
+                      ON tm.tweet_id = ct.tweet_id
+                    WHERE ct.author_username IS NOT NULL
+                      AND lower(ct.author_username) = %s
+                    ORDER BY ct.created_at DESC NULLS LAST, ct.inserted_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (u, limit, offset),
+                )
+
+            rows = cur.fetchall() or []
+
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                tid = r.get("tweet_id") or ""
+                url = r.get("url") or ""
+                if not url and tid:
+                    url = f"https://x.com/i/web/status/{tid}"
+
+                out.append(
+                    {
+                        "tweet_id": tid,
+                        "username": r.get("author_username") or u,
+                        "name": r.get("author_name"),
+                        "created_at": (r.get("created_at").isoformat() if r.get("created_at") else None),
+                        "url": url,
+                        "text": r.get("text") or "",
+                        "views": int(r.get("views") or 0),
+                        "likes": int(r.get("likes") or 0),
+                        "retweets": int(r.get("retweets") or 0),
+                        "replies": int(r.get("replies") or 0),
+                        "quotes": int(r.get("quotes") or 0),
+                        "bookmarks": int(r.get("bookmarks") or 0),
+                    }
+                )
+
+            return out
+    finally:
+        _put_conn(conn)
+
 
 def get_community_stats() -> Dict[str, int]:
     dc = get_discord_stats()
@@ -1199,3 +1303,4 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
