@@ -14,7 +14,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"✅ Discord bot started: {bot.user}")
+    print(f"Discord bot started: {bot.user}")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -41,3 +41,4 @@ async def scan(ctx: commands.Context):
 if __name__ == "__main__":
 
     bot.run(DISCORD_TOKEN)
+
