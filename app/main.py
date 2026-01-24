@@ -10,19 +10,19 @@ from app.auth_routes import router as auth_router
 from app.stats import (
     close_pool,
     shutdown_workers,
-    # community
+
     get_discord_top,
     get_telegram_top,
     get_tg_user,
     get_dc_user,
     get_community_stats,
-    # X
+
     get_x_top,
     get_x_user,
-    # sanctum
+
     parse_sanctum,
     get_latest_sanctum,
-    # solscan
+
     parse_solscan,
     get_latest_solscan,
     get_x_posts,
@@ -31,7 +31,6 @@ from app.stats import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # init auth/frontend DB pool
     await init_auth_pool()
     try:
         yield
@@ -49,13 +48,12 @@ app.add_middleware(
         "https://bulkhub-production.up.railway.app",
         "http://localhost:5173",
         "http://localhost:3000",
-        # добавь сюда домен твоего фронта (railway/vercel/etc) если другой
+
     ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# подключаем новые роуты (auth + markers)
 app.include_router(auth_router)
 
 
@@ -80,7 +78,6 @@ def root():
     }
 
 
-# -------- COMMUNITY --------
 @app.get("/community/stats")
 async def community_stats():
     return await run_in_threadpool(get_community_stats)
@@ -128,7 +125,6 @@ async def dc_user(username: str):
     return result or {"error": f" DC {username} не найден"}
 
 
-# -------- SANCTUM --------
 @app.get("/sanctum/latest")
 async def sanctum_latest():
     return await run_in_threadpool(get_latest_sanctum)
@@ -139,7 +135,6 @@ async def sanctum_refresh():
     return await run_in_threadpool(parse_sanctum)
 
 
-# -------- SOLSCAN --------
 @app.get("/solscan/latest")
 async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(get_latest_solscan, limit)
@@ -148,5 +143,6 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
 
