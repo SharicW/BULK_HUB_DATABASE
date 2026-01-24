@@ -1354,6 +1354,97 @@ def get_community_stats() -> Dict[str, int]:
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
 
+def get_x_user_totals(username: str) -> Dict[str, Any]:
+    """
+    Aggregated stats for X user across all stored community posts:
+    posts, views, likes, retweets, replies, quotes, bookmarks + followers/following.
+    Uses tables: community_tweets, tweet_metrics_latest, users
+    """
+    u = (username or "").strip()
+    if not u:
+        return {
+            "username": "",
+            "posts": 0,
+            "views": 0,
+            "likes": 0,
+            "retweets": 0,
+            "replies": 0,
+            "quotes": 0,
+            "bookmarks": 0,
+            "followers": 0,
+            "following": 0,
+        }
+
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+
+            cur.execute(
+                """
+                SELECT
+                  lower(ct.author_username) AS username,
+                  COUNT(*)::bigint AS posts,
+                  COALESCE(SUM(tm.view_count),0)::bigint AS views,
+                  COALESCE(SUM(tm.like_count),0)::bigint AS likes,
+                  COALESCE(SUM(tm.retweet_count),0)::bigint AS retweets,
+                  COALESCE(SUM(tm.reply_count),0)::bigint AS replies,
+                  COALESCE(SUM(tm.quote_count),0)::bigint AS quotes,
+                  COALESCE(SUM(tm.bookmark_count),0)::bigint AS bookmarks,
+                  COALESCE(MAX(u.followers),0)::bigint AS followers,
+                  COALESCE(MAX(u.following),0)::bigint AS following
+                FROM community_tweets ct
+                LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
+                LEFT JOIN users u ON lower(u.username) = lower(ct.author_username)
+                WHERE lower(ct.author_username) = lower(%s)
+                GROUP BY lower(ct.author_username)
+                LIMIT 1
+                """,
+                (u,),
+            )
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+
+
+            cur.execute(
+                """
+                SELECT
+                  lower(username) AS username,
+                  0::bigint AS posts,
+                  0::bigint AS views,
+                  0::bigint AS likes,
+                  0::bigint AS retweets,
+                  0::bigint AS replies,
+                  0::bigint AS quotes,
+                  0::bigint AS bookmarks,
+                  COALESCE(followers,0)::bigint AS followers,
+                  COALESCE(following,0)::bigint AS following
+                FROM users
+                WHERE lower(username) = lower(%s)
+                LIMIT 1
+                """,
+                (u,),
+            )
+            row2 = cur.fetchone()
+            if row2:
+                return dict(row2)
+
+
+            return {
+                "username": u.lower(),
+                "posts": 0,
+                "views": 0,
+                "likes": 0,
+                "retweets": 0,
+                "replies": 0,
+                "quotes": 0,
+                "bookmarks": 0,
+                "followers": 0,
+                "following": 0,
+            }
+    finally:
+        _put_conn(conn)
+
 
 
 
