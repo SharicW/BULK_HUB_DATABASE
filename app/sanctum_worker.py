@@ -42,7 +42,6 @@ def main() -> None:
         if run_once:
             break
 
-        # сон с возможностью быстро остановиться
         for _ in range(interval):
             if STOP:
                 break
