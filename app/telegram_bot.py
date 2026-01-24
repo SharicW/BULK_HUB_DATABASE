@@ -7,7 +7,7 @@ from app.stats import add_telegram_message
 
 TG_API_ID = int(os.getenv("TG_API_ID", "0"))
 TG_API_HASH = os.getenv("TG_API_HASH")
-TG_SESSION = os.getenv("TG_SESSION")          # StringSession
+TG_SESSION = os.getenv("TG_SESSION")
 TG_CHANNEL = os.getenv("TG_CHANNEL", "@tradebulk")
 TG_SCAN = os.getenv("TG_SCAN", "0") == "1"
 
@@ -29,7 +29,6 @@ async def full_scan_history():
         if not sender or getattr(sender, "bot", False):
             continue
 
-        # add_telegram_message сам пишет в ThreadPool, не блокирует event loop
         add_telegram_message(
             sender.id,
             getattr(sender, "username", None),
@@ -40,7 +39,7 @@ async def full_scan_history():
         if total % 1000 == 0:
             print(f"📤 {total} сообщений отправлено в запись")
 
-    print(f"✅ Скан завершён: {total} сообщений обработано")
+    print(f"Скан завершён: {total} сообщений обработано")
 
 @client.on(events.NewMessage(chats=TG_CHANNEL))
 async def handler(event):
@@ -56,13 +55,13 @@ async def handler(event):
 
 async def main():
     await client.start()
-    print("✅ Telegram bot started (listening)")
+    print("Telegram bot started (listening)")
 
     if TG_SCAN:
         await full_scan_history()
-        # Важно: после скана бот продолжит слушать новые сообщения
 
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
