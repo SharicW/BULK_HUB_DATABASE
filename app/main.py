@@ -132,6 +132,9 @@ async def discord_members_latest():
 async def discord_members_refresh():
     return await run_in_threadpool(parse_discord_guild_members)
 
+@app.get("/x/totals/{username}")
+async def x_user_totals(username: str):
+    return await run_in_threadpool(get_x_user_totals, username)
 
 @app.get("/x/posts")
 async def x_posts(
@@ -194,6 +197,7 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
 
 
