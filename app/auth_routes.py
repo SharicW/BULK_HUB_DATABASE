@@ -20,11 +20,10 @@ JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_PLEASE")
 JWT_ALG = os.getenv("JWT_ALG", "HS256")
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
-# bcrypt ограничивает пароль 72 байтами (UTF-8 байты, не символы)
+
 MAX_BCRYPT_BYTES = 72
 
 
-# --------- models ---------
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=200)
@@ -56,7 +55,6 @@ class MarkerOut(MarkerIn):
     user_id: str
 
 
-# --------- helpers ---------
 def _pwd_bytes(password: str) -> bytes:
     b = password.encode("utf-8")
     if len(b) == 0:
@@ -65,7 +63,7 @@ def _pwd_bytes(password: str) -> bytes:
             detail="Password cannot be empty.",
         )
     if len(b) > MAX_BCRYPT_BYTES:
-        # bcrypt будет фактически "резать" пароль — лучше явно запретить
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password too long (max 72 bytes). Use a shorter password.",
@@ -118,7 +116,6 @@ async def get_current_user(
     return UserOut(id=user_id, email=email)
 
 
-# --------- routes ---------
 @router.post("/auth/login", response_model=AuthResponse)
 async def auth_login(body: LoginRequest):
     email = body.email.strip().lower()
@@ -131,7 +128,7 @@ async def auth_login(body: LoginRequest):
             email,
         )
 
-        # если пользователя нет — создаём (регистрация “на лету”)
+
         if row is None:
             password_hash = _hash_password(password)
             try:
@@ -142,7 +139,7 @@ async def auth_login(body: LoginRequest):
                     password_hash,
                 )
             except asyncpg.UniqueViolationError:
-                # гонка: кто-то создал параллельно
+
                 row = await conn.fetchrow(
                     "SELECT id, email, password_hash FROM users WHERE email=$1",
                     email,
@@ -188,7 +185,7 @@ async def auth_change_password(body: ChangePasswordRequest, user: UserOut = Depe
 
 @router.post("/auth/logout")
 async def auth_logout(user: UserOut = Depends(get_current_user)):
-    # JWT stateless logout: фронт удаляет токен. Эндпоинт оставлен для совместимости.
+
     return {"ok": True}
 
 
