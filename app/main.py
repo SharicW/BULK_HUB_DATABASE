@@ -35,6 +35,7 @@ from app.stats import (
     parse_solscan,
     get_latest_solscan,
     get_x_posts,
+    get_x_user_totals,
 )
 
 
@@ -193,5 +194,6 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
 
