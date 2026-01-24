@@ -9,12 +9,12 @@ if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set")
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True  # включи Message Content Intent в Discord Developer Portal
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"Discord bot started: {bot.user}")
+    print(f"✅ Discord bot started: {bot.user}")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -36,9 +36,7 @@ async def scan(ctx: commands.Context):
         except Exception:
             continue
 
-    await ctx.send(f"Скан: {total} сообщений отправлено в запись")
+    await ctx.send(f"✅ Скан: {total} сообщений отправлено в запись")
 
 if __name__ == "__main__":
-
     bot.run(DISCORD_TOKEN)
-
