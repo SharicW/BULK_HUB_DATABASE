@@ -26,6 +26,7 @@ from app.stats import (
     parse_solscan,
     get_latest_solscan,
     get_x_posts,
+    get_x_user_totals,
 )
 
 
@@ -113,6 +114,12 @@ async def x_user(username: str):
     return result or {"error": f" X {username} не найден"}
 
 
+@app.get("/x/user/{username}/totals")
+async def x_user_totals(username: str):
+    return await run_in_threadpool(get_x_user_totals, username)
+
+
+
 @app.get("/tg/{username}")
 async def tg_user(username: str):
     result = await run_in_threadpool(get_tg_user, username)
@@ -143,6 +150,7 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
 
 
