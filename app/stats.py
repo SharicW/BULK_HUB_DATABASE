@@ -25,9 +25,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 logger = logging.getLogger(__name__)
 
-# --------------------
-# DB CONFIG / POOL
-# --------------------
+
 DB_CONFIG = {
     "host": os.getenv("PGHOST", "localhost"),
     "port": int(os.getenv("PGPORT", "5432")),
@@ -89,9 +87,7 @@ def _put_conn(conn) -> None:
     _pool.putconn(conn)
 
 
-# --------------------
-# THREAD POOL (bot writes)
-# --------------------
+
 _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
@@ -110,9 +106,7 @@ def _submit_background(fn, *args, **kwargs) -> None:
     fut.add_done_callback(_log_exc)
 
 
-# --------------------
-# SCHEMA ENSURE
-# --------------------
+
 _schema_ready = False
 _schema_lock = threading.Lock()
 
@@ -129,7 +123,6 @@ def ensure_schema() -> None:
         conn = _get_conn()
         try:
             with conn.cursor() as cur:
-                # --- Discord / Telegram ---
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS discord_users (
@@ -152,7 +145,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # --- Sanctum ---
+
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS sanctum_bulk_metrics (
@@ -171,7 +164,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # --- Solscan ---
+
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS solscan_transactions (
@@ -203,9 +196,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # -----------------------------------------------------------------
-                # X PARSER SCHEMA (точно по BULK_HUB_X_PARSER/schema.sql)
-                # -----------------------------------------------------------------
+
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS communities (
@@ -215,7 +206,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # key/value state (как у X-parser)
+
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS ingest_state (
@@ -261,7 +252,7 @@ def ensure_schema() -> None:
                     """
                 )
 
-                # на всякий (если когда-то была урезанная версия таблицы)
+
                 cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS raw_json JSONB;")
                 cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ DEFAULT now();")
                 cur.execute("ALTER TABLE community_tweets ADD COLUMN IF NOT EXISTS author_id TEXT;")
@@ -356,9 +347,7 @@ def ensure_schema() -> None:
             _put_conn(conn)
 
 
-# --------------------
-# HELPERS
-# --------------------
+
 def _clean_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip()
 
@@ -438,7 +427,6 @@ def _guess_event_ts(time_text: str) -> Optional[datetime]:
 
 
 def _get_x_community_id() -> Optional[str]:
-    # X-parser использует COMMUNITY_ID
     return (
         os.getenv("COMMUNITY_ID")
         or os.getenv("X_COMMUNITY_ID")
@@ -447,7 +435,6 @@ def _get_x_community_id() -> Optional[str]:
 
 
 def _x_engage_expr_sql() -> str:
-    # points = posts*5 + likes*2 + retweets*3 + replies*4 + quotes*3 + bookmarks*2 + floor(views/100)
     return """
       (COUNT(*) * 5
        + COALESCE(SUM(tm.like_count),0) * 2
@@ -460,9 +447,7 @@ def _x_engage_expr_sql() -> str:
     """
 
 
-# --------------------
-# SELENIUM (shared)
-# --------------------
+
 def _make_driver() -> Tuple[webdriver.Chrome, str]:
     chrome_bin = (
         os.getenv("CHROME_BIN")
@@ -503,9 +488,7 @@ def _make_driver() -> Tuple[webdriver.Chrome, str]:
     return driver, tmp_dir
 
 
-# --------------------
-# SANCTUM PARSER (selenium)
-# --------------------
+
 SANCTUM_URL = "https://app.sanctum.so/explore/BulkSOL"
 
 
@@ -581,9 +564,7 @@ def get_latest_sanctum() -> Dict[str, Any]:
         _put_conn(conn)
 
 
-# --------------------
-# SOLSCAN PARSER (FREE: selenium scrape, no API key)
-# --------------------
+
 SOLSCAN_TOKEN_MINT = os.getenv("SOLSCAN_TOKEN_MINT", "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn")
 SOLSCAN_TOKEN_SYMBOL = os.getenv("SOLSCAN_TOKEN_SYMBOL", "BULK")
 
@@ -811,9 +792,7 @@ def get_latest_solscan(limit: int = 10) -> List[Dict[str, Any]]:
         _put_conn(conn)
 
 
-# --------------------
-# BOT WRITE FUNCTIONS
-# --------------------
+
 def add_discord_message(user_id: int, username: str) -> None:
     def _add():
         ensure_schema()
@@ -869,9 +848,7 @@ def add_telegram_message(user_id: int, username: Optional[str], first_name: Opti
     _submit_background(_add)
 
 
-# --------------------
-# USER LOOKUP
-# --------------------
+
 def get_tg_user(username: str) -> Optional[Dict[str, Any]]:
     ensure_schema()
     conn = _get_conn()
@@ -982,8 +959,8 @@ def get_x_user(username: str) -> Optional[Dict[str, Any]]:
             return {
                 "platform": "X",
                 "username": row["username"],
-                "messages": int(row["engage_points"] or 0),  # фронт ожидает messages
-                # доп. поля (не мешают)
+                "messages": int(row["engage_points"] or 0),
+
                 "engage_points": int(row["engage_points"] or 0),
                 "posts": int(row["posts"] or 0),
                 "views": int(row["views"] or 0),
@@ -997,9 +974,7 @@ def get_x_user(username: str) -> Optional[Dict[str, Any]]:
         _put_conn(conn)
 
 
-# --------------------
-# TOP/STATS
-# --------------------
+
 def get_discord_top(limit: int = 15) -> List[Dict[str, Any]]:
     ensure_schema()
     conn = _get_conn()
@@ -1140,7 +1115,6 @@ def get_x_stats() -> Dict[str, int]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # primary: members
             if community_id:
                 cur.execute(
                     """
@@ -1160,7 +1134,6 @@ def get_x_stats() -> Dict[str, int]:
             row = cur.fetchone() or {"total_users": 0}
             total_users = int(row["total_users"] or 0)
 
-            # fallback: distinct posters
             if total_users == 0:
                 if community_id:
                     cur.execute(
@@ -1194,7 +1167,6 @@ def _extract_x_media_urls(raw: Any) -> List[str]:
     if raw is None:
         return []
 
-    # psycopg2 может вернуть dict, а может строку
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -1210,7 +1182,6 @@ def _extract_x_media_urls(raw: Any) -> List[str]:
         u = str(url).strip()
         if not u.startswith("http"):
             return
-        # pbs.twimg.com/media обычно картинки
         if ("pbs.twimg.com/media" in u) or any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
             if u not in seen:
                 seen.add(u)
@@ -1225,7 +1196,6 @@ def _extract_x_media_urls(raw: Any) -> List[str]:
             add(x.get("url"))
             add(x.get("preview_image_url"))
 
-            # общий обход
             for v in x.values():
                 walk(v)
         elif isinstance(x, list):
@@ -1245,7 +1215,6 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
     ensure_schema()
     community_id = _get_x_community_id()
 
-    # нормализуем ввод: "@name" -> "name"
     u = (username or "").strip()
     if u.startswith("@"):
         u = u[1:]
@@ -1324,7 +1293,6 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                 if not url and tid:
                     url = f"https://x.com/i/web/status/{tid}"
 
-                # media_urls может прийти как list/dict/str/null
                 media = r.get("media_urls")
 
                 if isinstance(media, str):
@@ -1336,11 +1304,9 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                 if not isinstance(media, list):
                     media = []
 
-                # fallback: если media_urls пустой — попробуем достать из raw_json
                 if not media:
                     media = _extract_x_media_urls(r.get("raw_json"))
 
-                # финальная чистка
                 clean_media: List[str] = []
                 seen = set()
                 for m in media:
@@ -1361,7 +1327,7 @@ def get_x_posts(username: str, limit: int = 30, offset: int = 0) -> List[Dict[st
                         "created_at": (r.get("created_at").isoformat() if r.get("created_at") else None),
                         "url": url,
                         "text": r.get("text") or "",
-                        "media": clean_media,  # ✅ ВОТ ТУТ КАРТИНКИ
+                        "media": clean_media,
                         "views": int(r.get("views") or 0),
                         "likes": int(r.get("likes") or 0),
                         "retweets": int(r.get("retweets") or 0),
@@ -1388,5 +1354,6 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
 
