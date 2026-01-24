@@ -16,22 +16,22 @@ from app.auth_routes import router as auth_router
 from app.stats import (
     close_pool,
     shutdown_workers,
-    # community
+
     get_discord_top,
     get_telegram_top,
     get_tg_user,
     get_dc_user,
     get_community_stats,
-    # discord server members
+
     parse_discord_guild_members,
     get_latest_discord_guild_members,
     # X
     get_x_top,
     get_x_user,
-    # sanctum
+
     parse_sanctum,
     get_latest_sanctum,
-    # solscan
+
     parse_solscan,
     get_latest_solscan,
     get_x_posts,
@@ -41,7 +41,7 @@ from app.stats import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # init auth/frontend DB pool
+
     await init_auth_pool()
 
     auto_refresh = os.getenv("DISCORD_MEMBERS_AUTO_REFRESH", "1").lower() not in ("0", "false", "no", "off")
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     refresh_task = None
 
     async def _discord_members_refresher() -> None:
-        # small delay so app can finish starting up
+
         await asyncio.sleep(2)
         while True:
             try:
@@ -83,16 +83,17 @@ app = FastAPI(title="BULK Stats API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://www.bulkhub.online",
+        "https://bulkhub.online",
         "https://bulkhub-production.up.railway.app",
         "http://localhost:5173",
         "http://localhost:3000",
-        # добавь сюда домен твоего фронта (railway/vercel/etc) если другой
     ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# подключаем новые роуты (auth + markers)
 app.include_router(auth_router)
 
 
@@ -119,7 +120,6 @@ def root():
     }
 
 
-# -------- COMMUNITY --------
 @app.get("/community/stats")
 async def community_stats():
     return await run_in_threadpool(get_community_stats)
@@ -177,7 +177,7 @@ async def dc_user(username: str):
     return result or {"error": f" DC {username} не найден"}
 
 
-# -------- SANCTUM --------
+
 @app.get("/sanctum/latest")
 async def sanctum_latest():
     return await run_in_threadpool(get_latest_sanctum)
@@ -188,7 +188,7 @@ async def sanctum_refresh():
     return await run_in_threadpool(parse_sanctum)
 
 
-# -------- SOLSCAN --------
+
 @app.get("/solscan/latest")
 async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(get_latest_solscan, limit)
@@ -197,6 +197,7 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(parse_solscan, limit_rows)
+
 
 
 
