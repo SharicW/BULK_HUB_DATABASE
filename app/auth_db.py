@@ -7,7 +7,7 @@ _pool: Optional[asyncpg.Pool] = None
 
 
 def _normalize_pg_url(url: str) -> str:
-    # иногда Railway даёт postgres:// ... а asyncpg ожидает postgresql:// ...
+
     if url.startswith("postgres://"):
         return url.replace("postgres://", "postgresql://", 1)
     return url
