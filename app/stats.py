@@ -1,4 +1,3 @@
-# app/stats.py
 import os
 import re
 import json
@@ -1354,6 +1353,7 @@ def get_community_stats() -> Dict[str, int]:
         "x_users": x_users,
         "total_users": dc["total_users"] + tg["total_users"] + x_users,
     }
+
 
 
 
