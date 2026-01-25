@@ -9,7 +9,7 @@ if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN is not set")
 
 intents = discord.Intents.default()
-intents.message_content = True  # включи Message Content Intent в Discord Developer Portal
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
@@ -40,3 +40,4 @@ async def scan(ctx: commands.Context):
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
