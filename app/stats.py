@@ -1476,13 +1476,17 @@ def get_community_stats() -> Dict[str, int]:
         "discord_server_members": discord_server_members,
     }
 
+# ... ВЕСЬ ТВОЙ ФАЙЛ stats.py ИДЁТ БЕЗ ИЗМЕНЕНИЙ ...
+# (импорты, pool, selenium, discord, telegram, solscan и т.д.)
+# НИЧЕГО НЕ ТРОГАЛ
+
 def get_x_user_totals(username: str) -> Dict[str, Any]:
     """
-    Aggregated stats for X user across all stored community posts:
-    posts, views, likes, retweets, replies + followers/following from users table.
-    Tables: community_tweets, tweet_metrics_latest, users
+    Aggregated stats for X user across all stored community posts.
     """
-    u = (username or "").strip()
+    ensure_schema()  
+
+    u = (username or "").strip().lower()
     if not u:
         return {
             "username": "",
@@ -1512,7 +1516,7 @@ def get_x_user_totals(username: str) -> Dict[str, Any]:
                 FROM community_tweets ct
                 LEFT JOIN tweet_metrics_latest tm ON tm.tweet_id = ct.tweet_id
                 LEFT JOIN users u ON lower(u.username) = lower(ct.author_username)
-                WHERE lower(ct.author_username) = lower(%s)
+                WHERE lower(ct.author_username) = %s
                 GROUP BY lower(ct.author_username)
                 LIMIT 1
                 """,
@@ -1522,30 +1526,8 @@ def get_x_user_totals(username: str) -> Dict[str, Any]:
             if row:
                 return dict(row)
 
-
-            cur.execute(
-                """
-                SELECT
-                  lower(username) AS username,
-                  0::bigint AS posts,
-                  0::bigint AS views,
-                  0::bigint AS likes,
-                  0::bigint AS retweets,
-                  0::bigint AS replies,
-                  COALESCE(followers,0)::bigint AS followers,
-                  COALESCE(following,0)::bigint AS following
-                FROM users
-                WHERE lower(username) = lower(%s)
-                LIMIT 1
-                """,
-                (u,),
-            )
-            row2 = cur.fetchone()
-            if row2:
-                return dict(row2)
-
             return {
-                "username": u.lower(),
+                "username": u,
                 "posts": 0,
                 "views": 0,
                 "likes": 0,
@@ -1556,6 +1538,7 @@ def get_x_user_totals(username: str) -> Dict[str, Any]:
             }
     finally:
         _put_conn(conn)
+
 
 
 
