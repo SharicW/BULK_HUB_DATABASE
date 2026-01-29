@@ -1539,6 +1539,133 @@ def get_x_user_totals(username: str) -> Dict[str, Any]:
     finally:
         _put_conn(conn)
 
+# ===== BULK TESTNET =====
+
+import time
+import shutil
+
+from selenium.webdriver.common.by import By
+from psycopg2.extras import execute_values, RealDictCursor
+
+
+BULK_TESTNET_URL = "https://early.bulk.trade/"
+
+BULK_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+
+
+def _bulk_find(driver, xpath: str) -> str:
+    try:
+        el = driver.find_element(By.XPATH, xpath)
+        return _clean_spaces(el.text)
+    except Exception:
+        return ""
+
+
+def _bulk_switch_market(driver, market: str) -> None:
+    btn = driver.find_element(
+        By.XPATH,
+        f"//*[normalize-space(text())='{market}']"
+    )
+    btn.click()
+    time.sleep(2.5)  # ждём обновление UI
+
+
+def parse_bulk_testnet() -> dict:
+    ensure_schema()
+
+    driver, tmp_dir = _make_driver()
+    rows = []
+
+    try:
+        driver.get(BULK_TESTNET_URL)
+        time.sleep(6)
+
+        for market in BULK_MARKETS:
+            _bulk_switch_market(driver, market)
+
+            oracle_price = _bulk_find(
+                driver,
+                "//h4[.//text()[contains(., 'Oracle Price')]]/following::span[1]"
+            )
+
+            volume_24h = _bulk_find(
+                driver,
+                "//h4[.//text()[contains(., '24h Volume')]]/following::span[1]"
+            )
+
+            open_interest = _bulk_find(
+                driver,
+                "//h4[.//text()[contains(., 'Open Interest')]]/following::span[1]"
+            )
+
+            funding = _bulk_find(
+                driver,
+                "//h4[.//text()[contains(., 'Funding')]]/ancestor::div[1]//span[1]"
+            )
+
+            countdown = _bulk_find(
+                driver,
+                "//h4[.//text()[contains(., 'Funding')]]/ancestor::div[1]//span[2]"
+            )
+
+            rows.append(
+                (market, oracle_price, volume_24h, open_interest, funding, countdown)
+            )
+
+    finally:
+        try:
+            driver.quit()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if not rows:
+        return {"inserted": 0}
+
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO bulk_testnet_metrics
+                  (market, oracle_price, volume_24h, open_interest, funding, countdown)
+                VALUES %s
+                """,
+                rows,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _put_conn(conn)
+
+    return {"inserted": len(rows)}
+
+
+def get_latest_bulk_testnet():
+    ensure_schema()
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (market)
+                    market,
+                    fetched_at,
+                    oracle_price,
+                    volume_24h,
+                    open_interest,
+                    funding,
+                    countdown
+                FROM bulk_testnet_metrics
+                ORDER BY market, fetched_at DESC
+                """
+            )
+            return cur.fetchall()
+    finally:
+        _put_conn(conn)
+
 
 
 
