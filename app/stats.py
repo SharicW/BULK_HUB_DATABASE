@@ -1553,12 +1553,21 @@ BULK_TESTNET_URL = "https://early.bulk.trade/"
 BULK_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
 
-def _bulk_find(driver, xpath: str) -> str:
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+def _bulk_find(driver, xpath: str, timeout: int = 15) -> str:
     try:
-        el = driver.find_element(By.XPATH, xpath)
+        wait = WebDriverWait(driver, timeout)
+        el = wait.until(
+            lambda d: (
+                e := d.find_element(By.XPATH, xpath)
+            ) and e.text.strip() != ""
+        )
         return _clean_spaces(el.text)
     except Exception:
         return ""
+
 
 
 def _bulk_switch_market(driver, market: str) -> None:
@@ -1665,6 +1674,7 @@ def get_latest_bulk_testnet():
             return cur.fetchall()
     finally:
         _put_conn(conn)
+
 
 
 
