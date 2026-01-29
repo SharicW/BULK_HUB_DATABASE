@@ -166,3 +166,12 @@ async def solscan_latest(limit: int = Query(25, ge=1, le=200)):
 @app.post("/solscan/refresh")
 async def solscan_refresh(limit_rows: int = Query(25, ge=1, le=200)):
     return await run_in_threadpool(stats.parse_solscan, limit_rows)
+
+@app.get("/bulk/testnet/latest")
+async def bulk_testnet_latest():
+    return await run_in_threadpool(stats.get_latest_bulk_testnet)
+
+
+@app.post("/bulk/testnet/refresh")
+async def bulk_testnet_refresh():
+    return await run_in_threadpool(stats.parse_bulk_testnet)
