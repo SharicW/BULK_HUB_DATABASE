@@ -1594,27 +1594,27 @@ def parse_bulk_testnet() -> dict:
 
             oracle_price = _bulk_find(
                 driver,
-                "//h4[.//text()[contains(., 'Oracle Price')]]/following::span[1]"
+                "oracle_price": "//h4[contains(., 'Oracle Price')]/parent::div//span"
             )
 
             volume_24h = _bulk_find(
                 driver,
-                "//h4[.//text()[contains(., '24h Volume')]]/following::span[1]"
+                "volume_24h": "//h4[contains(., '24h Volume')]/parent::div//span"
             )
 
             open_interest = _bulk_find(
                 driver,
-                "//h4[.//text()[contains(., 'Open Interest')]]/following::span[1]"
+                "open_interest": "//h4[contains(., 'Open Interest')]/parent::div//span"
             )
 
             funding = _bulk_find(
                 driver,
-                "//h4[.//text()[contains(., 'Funding')]]/ancestor::div[1]//span[1]"
+                "funding": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[1]"
             )
 
             countdown = _bulk_find(
                 driver,
-                "//h4[.//text()[contains(., 'Funding')]]/ancestor::div[1]//span[2]"
+                "countdown": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[2]"
             )
 
             rows.append(
@@ -1674,6 +1674,7 @@ def get_latest_bulk_testnet():
             return cur.fetchall()
     finally:
         _put_conn(conn)
+
 
 
 
