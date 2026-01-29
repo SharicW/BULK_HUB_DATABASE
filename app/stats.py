@@ -1545,16 +1545,21 @@ import time
 import shutil
 
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 from psycopg2.extras import execute_values, RealDictCursor
 
 
 BULK_TESTNET_URL = "https://early.bulk.trade/"
-
 BULK_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
+BULK_XPATHS = {
+    "oracle_price": "//h4[contains(., 'Oracle Price')]/parent::div//span",
+    "volume_24h": "//h4[contains(., '24h Volume')]/parent::div//span",
+    "open_interest": "//h4[contains(., 'Open Interest')]/parent::div//span",
+    "funding": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[1]",
+    "countdown": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[2]",
+}
 
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 def _bulk_find(driver, xpath: str, timeout: int = 15) -> str:
     try:
@@ -1569,14 +1574,13 @@ def _bulk_find(driver, xpath: str, timeout: int = 15) -> str:
         return ""
 
 
-
 def _bulk_switch_market(driver, market: str) -> None:
     btn = driver.find_element(
         By.XPATH,
         f"//*[normalize-space(text())='{market}']"
     )
     btn.click()
-    time.sleep(2.5)  # ждём обновление UI
+    time.sleep(2.5)
 
 
 def parse_bulk_testnet() -> dict:
@@ -1592,30 +1596,11 @@ def parse_bulk_testnet() -> dict:
         for market in BULK_MARKETS:
             _bulk_switch_market(driver, market)
 
-            oracle_price = _bulk_find(
-                driver,
-                "oracle_price": "//h4[contains(., 'Oracle Price')]/parent::div//span"
-            )
-
-            volume_24h = _bulk_find(
-                driver,
-                "volume_24h": "//h4[contains(., '24h Volume')]/parent::div//span"
-            )
-
-            open_interest = _bulk_find(
-                driver,
-                "open_interest": "//h4[contains(., 'Open Interest')]/parent::div//span"
-            )
-
-            funding = _bulk_find(
-                driver,
-                "funding": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[1]"
-            )
-
-            countdown = _bulk_find(
-                driver,
-                "countdown": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[2]"
-            )
+            oracle_price = _bulk_find(driver, BULK_XPATHS["oracle_price"])
+            volume_24h = _bulk_find(driver, BULK_XPATHS["volume_24h"])
+            open_interest = _bulk_find(driver, BULK_XPATHS["open_interest"])
+            funding = _bulk_find(driver, BULK_XPATHS["funding"])
+            countdown = _bulk_find(driver, BULK_XPATHS["countdown"])
 
             rows.append(
                 (market, oracle_price, volume_24h, open_interest, funding, countdown)
@@ -1674,9 +1659,4 @@ def get_latest_bulk_testnet():
             return cur.fetchall()
     finally:
         _put_conn(conn)
-
-
-
-
-
 
