@@ -1541,77 +1541,16 @@ def get_x_user_totals(username: str) -> Dict[str, Any]:
 
 # ===== BULK TESTNET =====
 
-import time
-import shutil
-
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from psycopg2.extras import execute_values, RealDictCursor
 
 
-BULK_TESTNET_URL = "https://early.bulk.trade/"
-BULK_MARKETS = ["BTC-USD", "ETH-USD", "SOL-USD"]
-
-BULK_XPATHS = {
-    "oracle_price": "//h4[contains(., 'Oracle Price')]/parent::div//span",
-    "volume_24h": "//h4[contains(., '24h Volume')]/parent::div//span",
-    "open_interest": "//h4[contains(., 'Open Interest')]/parent::div//span",
-    "funding": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[1]",
-    "countdown": "//h4[contains(., 'Funding')]/ancestor::div[1]//span[2]",
-}
-
-
-def _bulk_find(driver, xpath: str, timeout: int = 15) -> str:
-    try:
-        wait = WebDriverWait(driver, timeout)
-        el = wait.until(
-            lambda d: (
-                e := d.find_element(By.XPATH, xpath)
-            ) and e.text.strip() != ""
-        )
-        return _clean_spaces(el.text)
-    except Exception:
-        return ""
-
-
-def _bulk_switch_market(driver, market: str) -> None:
-    btn = driver.find_element(
-        By.XPATH,
-        f"//*[normalize-space(text())='{market}']"
-    )
-    btn.click()
-    time.sleep(2.5)
-
-
-def parse_bulk_testnet() -> dict:
-    ensure_schema()
-
-    driver, tmp_dir = _make_driver()
-    rows = []
-
-    try:
-        driver.get(BULK_TESTNET_URL)
-        time.sleep(6)
-
-        for market in BULK_MARKETS:
-            _bulk_switch_market(driver, market)
-
-            oracle_price = _bulk_find(driver, BULK_XPATHS["oracle_price"])
-            volume_24h = _bulk_find(driver, BULK_XPATHS["volume_24h"])
-            open_interest = _bulk_find(driver, BULK_XPATHS["open_interest"])
-            funding = _bulk_find(driver, BULK_XPATHS["funding"])
-            countdown = _bulk_find(driver, BULK_XPATHS["countdown"])
-
-            rows.append(
-                (market, oracle_price, volume_24h, open_interest, funding, countdown)
-            )
-
-    finally:
-        try:
-            driver.quit()
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
+def insert_bulk_testnet_rows(rows: list[tuple]) -> dict:
+    """
+    rows = [
+      (market, oracle_price, volume_24h, open_interest, funding, countdown),
+      ...
+    ]
+    """
     if not rows:
         return {"inserted": 0}
 
@@ -1638,7 +1577,6 @@ def parse_bulk_testnet() -> dict:
 
 
 def get_latest_bulk_testnet():
-    ensure_schema()
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1659,4 +1597,3 @@ def get_latest_bulk_testnet():
             return cur.fetchall()
     finally:
         _put_conn(conn)
-
