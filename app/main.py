@@ -175,3 +175,7 @@ async def bulk_testnet_latest():
 @app.post("/bulk/testnet/refresh")
 async def bulk_testnet_refresh():
     return await run_in_threadpool(stats.parse_bulk_testnet)
+    
+@app.get("/bulk/testnet/summary")
+async def bulk_testnet_summary():
+    return await run_in_threadpool(stats.get_bulk_testnet_summary)
