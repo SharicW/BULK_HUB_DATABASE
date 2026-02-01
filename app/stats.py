@@ -1597,3 +1597,37 @@ def get_latest_bulk_testnet():
             return cur.fetchall()
     finally:
         _put_conn(conn)
+
+def get_bulk_testnet_summary():
+    """
+    Aggregated summary for BULK testnet markets
+    """
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS active_markets,
+                    COALESCE(SUM(volume_24h::numeric), 0) AS total_volume,
+                    COALESCE(SUM(open_interest::numeric), 0) AS total_oi,
+                    COALESCE(
+                        AVG(
+                            NULLIF(REPLACE(funding, '%', ''), '')::numeric
+                        ),
+                        0
+                    ) AS avg_funding
+                FROM (
+                    SELECT DISTINCT ON (market)
+                        market,
+                        volume_24h,
+                        open_interest,
+                        funding
+                    FROM bulk_testnet_metrics
+                    ORDER BY market, fetched_at DESC
+                ) t
+                """
+            )
+            return cur.fetchone()
+    finally:
+        _put_conn(conn)
