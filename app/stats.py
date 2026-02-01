@@ -1598,6 +1598,9 @@ def get_latest_bulk_testnet():
     finally:
         _put_conn(conn)
 
+from psycopg2.extras import RealDictCursor
+
+
 def get_bulk_testnet_summary():
     conn = _get_conn()
     try:
@@ -1609,24 +1612,33 @@ def get_bulk_testnet_summary():
 
                     COALESCE(
                         SUM(
-                            REPLACE(REPLACE(volume_24h, ',', ''), '$', '')::numeric
+                            CASE
+                                WHEN volume_24h ~ '^[\\$0-9,\\.]+$'
+                                THEN REPLACE(REPLACE(volume_24h, ',', ''), '$', '')::numeric
+                                ELSE 0
+                            END
                         ),
                         0
                     ) AS total_volume,
 
                     COALESCE(
                         SUM(
-                            REPLACE(REPLACE(open_interest, ',', ''), '$', '')::numeric
+                            CASE
+                                WHEN open_interest ~ '^[\\$0-9,\\.]+$'
+                                THEN REPLACE(REPLACE(open_interest, ',', ''), '$', '')::numeric
+                                ELSE 0
+                            END
                         ),
                         0
                     ) AS total_oi,
 
                     COALESCE(
                         AVG(
-                            NULLIF(
-                                REPLACE(funding, '%', ''),
-                                ''
-                            )::numeric
+                            CASE
+                                WHEN funding ~ '^[0-9\\.]+%$'
+                                THEN REPLACE(funding, '%', '')::numeric
+                                ELSE NULL
+                            END
                         ),
                         0
                     ) AS avg_funding
