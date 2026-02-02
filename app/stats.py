@@ -1609,6 +1609,19 @@ from psycopg2.extras import RealDictCursor
 
 
 def get_bulk_testnet_summary():
+    """Summary for the *latest* snapshot per market.
+
+    Returns:
+      {
+        active_markets: int,
+        total_volume: numeric,
+        total_oi: numeric,
+        avg_funding: numeric
+      }
+
+    Note: funding in DB is stored as text like '0.0008%'.
+    We extract the numeric part with regexp_match to be tolerant to '+', spaces, etc.
+    """
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1616,6 +1629,62 @@ def get_bulk_testnet_summary():
                 """
                 SELECT
                     COUNT(*) AS active_markets,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN volume_24h ~ '^[\$0-9,\.]+$'
+                                THEN REPLACE(REPLACE(volume_24h, ',', ''), '$', '')::numeric
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS total_volume,
+
+                    COALESCE(
+                        SUM(
+                            CASE
+                                WHEN open_interest ~ '^[\$0-9,\.]+$'
+                                THEN REPLACE(REPLACE(open_interest, ',', ''), '$', '')::numeric
+                                ELSE 0
+                            END
+                        ),
+                        0
+                    ) AS total_oi,
+
+                    COALESCE(
+                        AVG(
+                            CASE
+                                WHEN funding IS NULL OR funding = '' THEN NULL
+                                WHEN funding ~ '[-+]?[0-9]*\.?[0-9]+' THEN
+                                    (regexp_match(funding, '([-+]?[0-9]*\.?[0-9]+)'))[1]::numeric
+                                ELSE NULL
+                            END
+                        ),
+                        0
+                    ) AS avg_funding
+
+                FROM (
+                    SELECT DISTINCT ON (market)
+                        market,
+                        volume_24h,
+                        open_interest,
+                        funding
+                    FROM bulk_testnet_metrics
+                    ORDER BY market, fetched_at DESC
+                ) t
+                """
+            )
+            return cur.fetchone() or {
+                "active_markets": 0,
+                "total_volume": 0,
+                "total_oi": 0,
+                "avg_funding": 0,
+            }
+    finally:
+        _put_conn(conn)
+
+
 
                     COALESCE(
                         SUM(
