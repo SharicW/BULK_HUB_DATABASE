@@ -472,6 +472,8 @@ def _make_driver() -> Tuple[webdriver.Chrome, str]:
     chrome_bin = (
         os.getenv("CHROME_BIN")
         or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or shutil.which("google-chrome-stable")
         or shutil.which("google-chrome")
         or shutil.which("chrome")
     )
@@ -480,19 +482,26 @@ def _make_driver() -> Tuple[webdriver.Chrome, str]:
     if not chromedriver_path:
         raise RuntimeError("chromedriver not found in PATH. Install chromium + chromedriver in the image.")
 
+    if not chrome_bin:
+        raise RuntimeError(
+            "Chrome/Chromium binary not found. Install chromium (or set CHROME_BIN) in the image."
+        )
+
     tmp_dir = tempfile.mkdtemp(prefix="chrome-data-")
 
     opts = ChromeOptions()
+    opts.binary_location = chrome_bin
+
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--lang=en-US")
-    opts.add_argument("--remote-debugging-port=0")
     opts.add_argument(f"--user-data-dir={tmp_dir}")
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--disable-features=VizDisplayCompositor")
 
     prefs = {
         "profile.managed_default_content_settings.images": 2,
@@ -500,12 +509,10 @@ def _make_driver() -> Tuple[webdriver.Chrome, str]:
     }
     opts.add_experimental_option("prefs", prefs)
 
-    if chrome_bin:
-        opts.binary_location = chrome_bin
-
     service = ChromeService(executable_path=chromedriver_path)
     driver = webdriver.Chrome(service=service, options=opts)
     return driver, tmp_dir
+
 
 
 
@@ -1657,4 +1664,5 @@ def get_bulk_testnet_summary():
             return cur.fetchone()
     finally:
         _put_conn(conn)
+
 
